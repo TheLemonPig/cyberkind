@@ -6,7 +6,7 @@ class PerceptionModule(nn.Module):
     def __init__(self, input_dim, embed_dim):
         super().__init__()
         self.embedding = nn.Linear(input_dim, embed_dim)
-        self.perception_head = nn.Linear(embed_dim, embed_dim)
+        self.perception_head = nn.Linear(embed_dim, input_dim)
 
     def forward(self, x):
         x = self.embedding(x)

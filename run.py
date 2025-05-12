@@ -11,4 +11,4 @@ if __name__ == "__main__":
     env = GridWorldEnv()
     model = CyberKindModel()
 
-    run_pretraining(env, model, steps=10)
+    run_pretraining(env, model, steps=1000)
