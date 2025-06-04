@@ -40,7 +40,9 @@ def evaluate_prediction(env, model, steps=100):
 
         action = torch.argmax(output["behavior"]).item()
         next_state, _, done, _ = env.step(action)
-        true_index = torch.argmax(torch.tensor(next_state.flatten())).item()
+        true_index = torch.argmax(
+            torch.tensor(next_state.flatten(), dtype=torch.float32)
+        ).item()
 
         if pred_index == true_index:
             correct += 1
