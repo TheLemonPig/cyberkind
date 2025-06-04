@@ -43,7 +43,7 @@ class GridWorldEnv(gymnasium.Env):
       - Resources (food) appear and respawn over time.
       - Agents gain positive reward for eating, negative reward for hunger.
     """
-    metadata = {'render.modes': ['human']}
+    metadata = {'render_modes': ['human']}
 
     def __init__(self, size=5, agents=None, resources=None):
         """
