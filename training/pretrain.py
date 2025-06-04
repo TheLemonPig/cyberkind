@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 def run_pretraining(env, model, steps=1000, max_episode_length=100):
+    # TODO: fold learning logic inside of the model files – training files should be cleanly demonstrating the algorithm
     torch.autograd.set_detect_anomaly(True)
     beta = 0.00005  # strength of intrinsic curiosity reward
     gamma = 0.99  # discount factor
