@@ -15,7 +15,7 @@ import matplotlib.patches as mpatches
 from matplotlib.widgets import Button
 
 
-def launch_visualization(snapshots, obs_history, fps=2):
+def launch_visualization(snapshots, obs_history, fps=2, grid_size=5):
     """
     Replay tool: Displays a recorded trajectory using:
       - snapshots: list of full-state dicts (agent_positions, agent_orientations, & resource_states)
@@ -28,20 +28,20 @@ def launch_visualization(snapshots, obs_history, fps=2):
     agent_ids = list(obs_history[0].keys())
     vision_dim = obs_history[0][agent_ids[0]].shape[0]
     vision_range = (vision_dim - 1) // 2
-    grid_size = max(
-        max(pos[0], pos[1]) for pos in snapshots[0]['agent_positions'].values()
-    ) + 1
+    grid_size = grid_size
 
-    # Set up figure and axes
+    # Set up figure and axes dynamically for any number of agents
+    n_agents = len(agent_ids)
     fig = plt.figure(figsize=(8, 6))
-    ax_full   = plt.subplot2grid((3, 3), (0, 0), rowspan=3, colspan=2)
-    ax_patch1 = plt.subplot2grid((3, 3), (0, 2))
-    ax_patch2 = plt.subplot2grid((3, 3), (1, 2))
+    gs = fig.add_gridspec(n_agents, 2, width_ratios=[3, 1], wspace=0.1)
+    ax_full = fig.add_subplot(gs[:, 0])
+    ax_patches = [fig.add_subplot(gs[i, 1]) for i in range(n_agents)]
 
-    ax_button_prev    = plt.axes([0.55, 0.05, 0.08, 0.05])
-    ax_button_next    = plt.axes([0.65, 0.05, 0.08, 0.05])
-    ax_button_restart = plt.axes([0.75, 0.05, 0.08, 0.05])
-    ax_button_quit    = plt.axes([0.85, 0.05, 0.08, 0.05])
+    # control buttons
+    ax_button_prev    = fig.add_axes([0.55, 0.05, 0.08, 0.05])
+    ax_button_next    = fig.add_axes([0.65, 0.05, 0.08, 0.05])
+    ax_button_restart = fig.add_axes([0.75, 0.05, 0.08, 0.05])
+    ax_button_quit    = fig.add_axes([0.85, 0.05, 0.08, 0.05])
 
     button_prev    = Button(ax_button_prev,    "Prev")
     button_next    = Button(ax_button_next,    "Next")
@@ -164,12 +164,10 @@ def launch_visualization(snapshots, obs_history, fps=2):
         # Draw full grid from snapshot[idx]
         draw_full_grid_from_snapshot(ax_full, snapshots[idx])
 
-        # Draw the two agents' patches from obs_history[idx]
-        patch0 = obs_history[idx][agent_ids[0]]
-        patch1 = obs_history[idx][agent_ids[1]]
-        draw_agent_patch(ax_patch1, patch0, title=f"{agent_ids[0].capitalize()}'s View")
-        draw_agent_patch(ax_patch2, patch1, title=f"{agent_ids[1].capitalize()}'s View")
-
+        # Draw each agent's local view
+        for ax, agent_id in zip(ax_patches, agent_ids):
+            patch = obs_history[idx][agent_id]
+            draw_agent_patch(ax, patch, title=f"{agent_id.capitalize()}'s View")
         plt.draw()
 
     # Button handlers to modify idx
