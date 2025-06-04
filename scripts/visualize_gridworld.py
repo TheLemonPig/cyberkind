@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 from envs.gridworld.env import GridWorldEnv
-from models.transformer_base import CyberKindModel
+from models.transformer import CyberKindModel
 
 def visualize_untrained_model(steps=5, sleep_time=0.5):
     env = GridWorldEnv()

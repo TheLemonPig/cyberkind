@@ -11,16 +11,18 @@ class GridWorldEnv:
 
     def reset(self):
         self.agent_pos = [0, 0]
+        self.done = False
         return self._get_obs()
 
     def step(self, action):
-        # dummy logic
-        self.agent_pos[0] = min(self.size - 1, self.agent_pos[0] + (action == 1) - (action == 3))
-        self.agent_pos[1] = min(self.size - 1, self.agent_pos[1] + (action == 2) - (action == 0))
+        if self.done:
+            raise RuntimeError("Cannot call step() on a finished environment. Call reset() first.")
+        self.agent_pos[0] = min(self.size - 1, max(0, self.agent_pos[0] + (action == 1) - (action == 3)))
+        self.agent_pos[1] = min(self.size - 1, max(0, self.agent_pos[1] + (action == 2) - (action == 0)))
         obs = self._get_obs()
-        reward = 1.0 if self.agent_pos == [self.size - 1, self.size - 1] else 0.0
-        done = reward == 1.0
-        return obs, reward, done, {}
+        reward = 1.0 if self.agent_pos == [self.size - self.size//2, self.size - self.size//2] else 0.0
+        self.done = reward == 1.0
+        return obs, reward, self.done, {}
 
     def _get_obs(self):
         obs = np.zeros((self.size, self.size), dtype=np.float32)
