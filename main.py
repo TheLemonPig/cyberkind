@@ -13,7 +13,8 @@ def main():
         'GridWorldMultiAgent-v0',
         size=5,
         agents=[alice, bob],
-        resources=None  # will spawn defaults in env
+        resources=None,  # will spawn defaults in env
+        end_on_starve=False  # end episode when all agents starve
     )
 
     # Helper to capture full state snapshot
@@ -22,6 +23,7 @@ def main():
         while hasattr(base_env, 'env'):
             base_env = base_env.env
         agent_positions = {agent.agent_id: tuple(agent.position) for agent in base_env.agents}
+        agent_orientations = {agent.agent_id: agent.orientation for agent in base_env.agents}
         resource_states = []
         for res in base_env.resources:
             resource_states.append({
@@ -29,7 +31,7 @@ def main():
                 'timer': res.timer,
                 'type': res.type
             })
-        return {'agent_positions': agent_positions, 'resource_states': resource_states}
+        return {'agent_positions': agent_positions, 'agent_orientations': agent_orientations, 'resource_states': resource_states}
 
     # 3) Run a short random-action loop and record histories for replay
     snapshots = []
@@ -46,7 +48,7 @@ def main():
     for agent_id, patch in obs.items():
         print(f"{agent_id} sees:\n{patch}\n")
 
-    for step_idx in range(10):
+    for step_idx in range(100):
         action_dict = {
             'alice': env.action_space.spaces['alice'].sample(),
             'bob':   env.action_space.spaces['bob'].sample()

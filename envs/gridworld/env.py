@@ -45,7 +45,7 @@ class GridWorldEnv(gymnasium.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, size=5, agents=None, resources=None):
+    def __init__(self, size=5, agents=None, resources=None, end_on_starve=True):
         """
         :param size: Grid dimension (size x size).
         :param agents: List of Agent instances (if None, user must pass them in).
@@ -57,6 +57,7 @@ class GridWorldEnv(gymnasium.Env):
         # Action/Observation spaces will be Dicts, once we know agent IDs.
         self.action_space = None
         self.observation_space = None
+        self.end_on_starve = end_on_starve  # If True, episode ends when all agents starve.
 
         # Flag to indicate episode end (all agents starved).
         self.done = False
@@ -158,15 +159,41 @@ class GridWorldEnv(gymnasium.Env):
             # Example penalty: -0.1 reward for each hunger point gained
             reward_dict[agent.agent_id] -= 0.1 * delta_hunger
 
-        # 3) Move each agent according to action, clipped to grid
+        # 3) Move each agent according to action, with turn/move semantics
         for agent in self.agents:
             act = action_dict.get(agent.agent_id, None)
             if act is not None:
-                x, y = agent.position
-                # 0=up, 1=right, 2=down, 3=left
-                new_x = min(self.size - 1, max(0, x + (act == 2) - (act == 0)))
-                new_y = min(self.size - 1, max(0, y + (act == 1) - (act == 3)))
-                agent.position = [new_x, new_y]
+                # 0 = turn left, 1 = turn right, 2 = move forward, 3 = move backward
+                if act == 0:
+                    agent.orientation = (agent.orientation - 1) % 4
+                elif act == 1:
+                    agent.orientation = (agent.orientation + 1) % 4
+                elif act == 2:
+                    # move forward in the direction of current orientation
+                    if agent.orientation == 0:   # up
+                        dx, dy = -1, 0
+                    elif agent.orientation == 1: # right
+                        dx, dy = 0, 1
+                    elif agent.orientation == 2: # down
+                        dx, dy = 1, 0
+                    else:                        # left
+                        dx, dy = 0, -1
+                    new_x = min(self.size - 1, max(0, agent.position[0] + dx))
+                    new_y = min(self.size - 1, max(0, agent.position[1] + dy))
+                    agent.position = [new_x, new_y]
+                elif act == 3:
+                    # move backward opposite to current orientation
+                    if agent.orientation == 0:   # up -> backward is down
+                        dx, dy = 1, 0
+                    elif agent.orientation == 1: # right -> backward is left
+                        dx, dy = 0, -1
+                    elif agent.orientation == 2: # down -> backward is up
+                        dx, dy = -1, 0
+                    else:                        # left -> backward is right
+                        dx, dy = 0, 1
+                    new_x = min(self.size - 1, max(0, agent.position[0] + dx))
+                    new_y = min(self.size - 1, max(0, agent.position[1] + dy))
+                    agent.position = [new_x, new_y]
 
         # 4) Tick resource timers (respawn countdown)
         for res in self.resources:
@@ -187,8 +214,11 @@ class GridWorldEnv(gymnasium.Env):
             obs_dict[agent.agent_id] = agent.observe(self)
             done_dict[agent.agent_id] = (agent.hunger >= agent.max_hunger)
 
-        # 7) If ALL agents are done, end episode
-        self.done = all(done_dict.values())
+        # 7) Optionally end on starvation
+        if self.end_on_starve:
+            self.done = all(done_dict.values())
+        else:
+            self.done = False
 
         # 8) Gym expects a single boolean "done"; info can carry per-agent dones if needed.
         info_dict = {'agent_dones': done_dict}
