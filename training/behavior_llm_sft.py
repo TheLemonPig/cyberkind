@@ -3,12 +3,25 @@ import torch.nn as nn
 from transformers import AutoTokenizer
 from dataclasses import dataclass
 from models.behavior_llm import build_model
+from accelerate import Accelerator
+from trl import SFTTrainer, SFTConfig
+from utils.logging import init_wandb
+
 # -----------------------------
 
 BACKBONE_ID = "google/gemma-7b"
 
+accelerator = Accelerator()
+
+if accelerator.is_main_process:
+    init_wandb()
+accelerator.wait_for_everyone()
+
 tokenizer = AutoTokenizer.from_pretrained(BACKBONE_ID)
+EOS_TOKEN = tokenizer.eos_token
 model = build_model()
+
+# -----------------------------
 
 # Dummy batch
 text = "Alice thinks Bob believes Carol loves Dave. Why?"
