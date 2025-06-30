@@ -1,15 +1,26 @@
+import os, sys
+
+# Resolve project_root = one level up from this script
+script_dir   = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
+
+# Prepend it so your imports see the entire repo
+sys.path.insert(0, project_root)
+
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from dataclasses import dataclass
-from models.behavior_llm import build_model
+from models.behavior_llm import GemmaWithModule
 from accelerate import Accelerator
 from trl import SFTTrainer, SFTConfig
 from utils.logging import init_wandb
+from datasets import load_dataset, concatenate_datasets
 
 # -----------------------------
 
 BACKBONE_ID = "google/gemma-7b"
+hf_token = os.getenv("HF_API_KEY", None)
 
 accelerator = Accelerator()
 
@@ -17,11 +28,40 @@ if accelerator.is_main_process:
     init_wandb()
 accelerator.wait_for_everyone()
 
-tokenizer = AutoTokenizer.from_pretrained(BACKBONE_ID)
+tokenizer = AutoTokenizer.from_pretrained(
+    BACKBONE_ID,
+    use_auth_token=hf_token
+    )
 EOS_TOKEN = tokenizer.eos_token
-model = build_model()
+
+    
+backbone = AutoModelForCausalLM.from_pretrained(
+    BACKBONE_ID,
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    load_in_8bit=True,
+    output_hidden_states=True,
+    use_auth_token=hf_token,
+)
+model = GemmaWithModule(backbone, module_depth=8, module_dim=1024)
+model.to(accelerator.device)
+
+for p in model.parameters():
+    p.requires_grad = False
+
 
 # -----------------------------
+
+# 3.  Load datasets
+# -----------------------------
+alpaca       = load_dataset("tatsu-lab/alpaca-cleaned")       # 52 K
+dolly        = load_dataset("databricks/databricks-dolly-15k")# 15 K
+openassistant= load_dataset("OpenAssistant/oasst2", split="all")#128 K
+
+# Optional: sample down to token budget if needed
+# e.g., retain first 200 K examples
+combined = concatenate_datasets([alpaca, dolly, openassistant]).shuffle(seed=42).select(range(200_000))
+
 
 # Dummy batch
 text = "Alice thinks Bob believes Carol loves Dave. Why?"
