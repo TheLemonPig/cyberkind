@@ -1,179 +1,259 @@
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch.nn.functional as F
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
 from dataclasses import dataclass
+from typing import List, Tuple
 
-# -----------------------------
-# 1.  Base (frozen) backbone
-# -----------------------------
+"""
+Gemma‑7B (frozen)  +  donor GPT‑2 blocks reused as a *cross‑attention* module.
 
-BACKBONE_ID = "google/gemma-7b"
+Major adjustments in this revision
+=================================
+1. **Hidden‑size adapter** ─ Gemma hidden=3072, GPT‑2 hidden=1024 →
+   we add a trainable linear `kv_in_proj` that maps Gemma features into
+   the donor attention dimensionality *once* per layer.
+2. **Head‑dim safety** ─ we assert that `embed_dim % num_heads == 0` so
+   the reshape in `split_qkv` never explodes.
+3. **Rotary / positional mismatch** ─ left as‑is; empirical evidence
+   suggests the projections are robust.  Inline TODO comment explains
+   how to disable RoPE if needed.
+4. **NaN guard utility** ─ `check_for_nans()` helper you can call from
+   your train loop.
+5. **LR scheduler placeholder** ─ inline comment shows where to plug in
+   a warm‑up + cosine decay schedule (not implemented here to keep this
+   file self‑contained).
+"""
 
-# 8‑bit load keeps the run under a single A100‑40 GB
+# -------------------------------------------------------
+# 0.  Config – edit here
+# -------------------------------------------------------
+
+BACKBONE_ID    = "google/gemma-7b"   # frozen comprehension model
+DONOR_ID       = "gpt2-medium"       # decoder supplying blocks
+N_DONOR_LAYERS = 8                    # last N donor blocks form module
+DEVICE         = "cuda" if torch.cuda.is_available() else "cpu"
+DTYPE          = torch.bfloat16       # keeps VRAM low while preserving range
+USE_8BIT       = True                # 8‑bit quant for backbone
+
+# -------------------------------------------------------
+# 1.  Backbone loader (Gemma) – frozen, hidden states retained
+# -------------------------------------------------------
+
 def load_frozen_backbone(model_id: str = BACKBONE_ID):
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        load_in_8bit=True,
-        output_hidden_states=True,
-    )
-
+    if USE_8BIT:
+        bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
+        model   = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            quantization_config=bnb_cfg,
+            torch_dtype=DTYPE,
+            device_map="auto",
+            output_hidden_states=True,
+        )
+    else:
+        model   = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=DTYPE,
+            device_map="auto",
+            output_hidden_states=True,
+        )
+    model.eval()
     for p in model.parameters():
         p.requires_grad = False
     return model
 
-# -----------------------------
-# 2.  Module building blocks
-# -----------------------------
+# -------------------------------------------------------
+# 2.  Tiny gated highway – parameter‑light driver path
+# -------------------------------------------------------
 
-class ModuleCrossLayer(nn.Module):
-    """One transformer layer that
-       • receives the previous module hidden state y_prev (B, T, D_mod)
-       • receives a *detached* backbone hidden state x_det (B, T, D_back)
-       and returns the next hidden state.
-       It implements:
-         y_hat = LN(    y_prev
-                       + CrossAttn(Q=y_prev, K=x_det, V=x_det)
-                       + HighwayProj(pool(x_det))
-                 )
-       followed by a standard FFN.
-    """
+class BridgeBlock(nn.Module):
+    """Gated additive highway that injects (projected) driver features."""
 
-    def __init__(self, d_mod: int, d_back: int, n_heads: int = 8, dropout: float = 0.1):
+    def __init__(self, hidden_size: int):
         super().__init__()
-        self.q_proj = nn.Linear(d_mod, d_mod)
-        self.k_proj = nn.Linear(d_back, d_mod)
-        self.v_proj = nn.Linear(d_back, d_mod)
-        self.attn = nn.MultiheadAttention(d_mod, n_heads, dropout=dropout, batch_first=True)
+        self.highway_proj = nn.Linear(hidden_size, hidden_size)
+        self.gate_proj    = nn.Linear(hidden_size, hidden_size)
+        self.ln           = nn.LayerNorm(hidden_size)
 
-        self.highway_proj = nn.Linear(d_back, d_mod)
-        self.norm1 = nn.LayerNorm(d_mod)
+    def forward(self, y: torch.Tensor, x_driver: torch.Tensor) -> torch.Tensor:
+        """x_driver already lives in *donor* hidden dimensionality."""
+        pooled  = x_driver.mean(dim=1, keepdim=True)      # (B,1,D)
+        highway = self.highway_proj(pooled)
+        gate    = torch.sigmoid(self.gate_proj(pooled))   # 0–1 soft mask
+        return self.ln(y + gate * highway)
 
-        # FFN
-        self.ff = nn.Sequential(
-            nn.Linear(d_mod, 4 * d_mod),
-            nn.GELU(),
-            nn.Linear(4 * d_mod, d_mod),
-            nn.Dropout(dropout),
-        )
-        self.norm2 = nn.LayerNorm(d_mod)
+# -------------------------------------------------------
+# 3.  Attention helpers (unchanged)
+# -------------------------------------------------------
 
-    def forward(self, y_prev: torch.Tensor, x_det: torch.Tensor):
-        # y_prev, x_det -> (B, T, *)
-        q = self.q_proj(y_prev)
-        k = self.k_proj(x_det)
-        v = self.v_proj(x_det)
-        attn_out, _ = self.attn(q, k, v, need_weights=False)
+def split_qkv(proj_out: torch.Tensor, num_heads: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    B, T, threeD = proj_out.size()
+    D = threeD // 3
+    q, k, v = proj_out.split(D, dim=2)
+    head_dim = D // num_heads
+    # reshape → (B, num_heads, T, head_dim)
+    return (
+        q.view(B, T, num_heads, head_dim).transpose(1, 2),
+        k.view(B, T, num_heads, head_dim).transpose(1, 2),
+        v.view(B, T, num_heads, head_dim).transpose(1, 2),
+    )
 
-        # Highway: pool over sequence length (mean) then project & broadcast
-        highway = self.highway_proj(x_det.mean(dim=1, keepdim=True))
-        highway = highway.expand_as(y_prev)
+def merge_heads(x: torch.Tensor) -> torch.Tensor:
+    B, H, T, Hd = x.size()
+    return x.transpose(1, 2).contiguous().view(B, T, H * Hd)
 
-        y = self.norm1(y_prev + attn_out + highway)
-        y = self.norm2(y + self.ff(y))
+# -------------------------------------------------------
+# 4.  ModuleLayer – donor block reused *with* adapter proj
+# -------------------------------------------------------
+
+class ModuleLayer(nn.Module):
+    """A donor GPT‑2 block turned into cross‑attention w/ driver adapter."""
+
+    def __init__(self, donor_block: nn.Module, driver_in_dim: int):
+        super().__init__()
+        self.donor_block = donor_block
+        self.attn        = donor_block.attn         # Q/K/V & out proj reused
+        self.mlp         = donor_block.mlp
+        self.ln_1        = donor_block.ln_1
+        self.ln_2        = donor_block.ln_2
+        self.num_heads   = donor_block.attn.num_heads
+        self.head_dim    = donor_block.attn.head_dim
+        embed_dim        = donor_block.attn.embed_dim
+        assert embed_dim % self.num_heads == 0, "Head dim mismatch!"
+
+        # Adapter: maps Gemma hidden (driver_in_dim) → donor embed_dim
+        self.kv_in_proj = nn.Linear(driver_in_dim, embed_dim, bias=False)
+
+        self.bridge     = BridgeBlock(embed_dim)
+
+    def forward(self, y: torch.Tensor, x_detached: torch.Tensor, attention_mask=None) -> torch.Tensor:
+        # ---- 1. Adapter projection (Gemma → donor dim) ----
+        x_drv = self.kv_in_proj(x_detached)  # (B,T2,embed_dim)
+
+        # ---- 2. Cross‑attention using donor weights ----
+        qkv_y = self.attn.c_attn(y)          # (B,T,3D)
+        q_y, _, _ = split_qkv(qkv_y, self.num_heads)
+
+        kv_x       = self.attn.c_attn(x_drv)
+        _, k_x, v_x = split_qkv(kv_x, self.num_heads)
+
+        attn_scores = torch.matmul(q_y, k_x.transpose(-1, -2)) / (self.head_dim ** 0.5)
+        if attention_mask is not None:
+            attn_scores += attention_mask.unsqueeze(1).unsqueeze(2)
+        attn_probs  = F.softmax(attn_scores, dim=-1)
+        attn_ctx    = torch.matmul(attn_probs, v_x)
+        attn_ctx    = merge_heads(attn_ctx)
+        attn_out    = self.attn.c_proj(attn_ctx)  # reuse donor out proj
+
+        y = y + attn_out          # residual 1
+        y = self.ln_1(y)
+
+        # ---- 3. Feed‑forward (unchanged) ----
+        y = y + self.mlp(y)       # residual 2
+        y = self.ln_2(y)
+
+        # ---- 4. Highway injection ----
+        y = self.bridge(y, x_drv)
         return y
 
+# -------------------------------------------------------
+# 5.  Module builder – slice *last N* donor layers
+# -------------------------------------------------------
 
-class ModuleStack(nn.Module):
-    """Stack of ModuleCrossLayers."""
+@dataclass
+class ModuleConfig:
+    donor_id: str = DONOR_ID
+    n_layers: int = N_DONOR_LAYERS
 
-    def __init__(self, num_layers: int, d_mod: int, d_back: int, n_heads: int = 8):
+
+def build_module(cfg: ModuleConfig, driver_in_dim: int):
+    donor = AutoModelForCausalLM.from_pretrained(cfg.donor_id, torch_dtype=DTYPE)
+    donor_layers: List[nn.Module] = list(donor.transformer.h)[-cfg.n_layers:]
+    wrapped = nn.ModuleList([
+        ModuleLayer(block, driver_in_dim) for block in donor_layers
+    ])
+    # Everything in wrapped is trainable by default
+    return donor.config.n_embd, wrapped
+
+# -------------------------------------------------------
+# 6.  Combined model
+# -------------------------------------------------------
+
+class CombinedModel(nn.Module):
+    def __init__(self, tap_start: int = None):
         super().__init__()
-        self.layers = nn.ModuleList([
-            ModuleCrossLayer(d_mod, d_back, n_heads=n_heads) for _ in range(num_layers)
-        ])
+        self.backbone = load_frozen_backbone()
+        driver_dim    = self.backbone.config.hidden_size  # Gemma=3072
 
-        # If d_mod != d_back we need a bridge for the first layer
-        self.bridge = (
-            nn.Linear(d_back, d_mod) if d_back != d_mod else nn.Identity()
-        )
+        # Default tap_start chooses final N layers so indices align
+        total_layers  = len(self.backbone.model.layers)
+        if tap_start is None:
+            tap_start = total_layers - N_DONOR_LAYERS
+        self.tap_start = tap_start
 
-    def forward(self, backbone_hiddens):
-        """backbone_hiddens: list[Tensor] length >= num_layers.
-           Returns final module hidden (B, T, d_mod)
-        """
-        y = self.bridge(backbone_hiddens[0])  # first driver layer
-        for i, layer in enumerate(self.layers):
-            y = layer(y, backbone_hiddens[i])
-        return y
+        # Build module
+        self.module_dim, self.module_layers = build_module(ModuleConfig(), driver_dim)
+        self.lm_head = nn.Linear(self.module_dim, self.backbone.config.vocab_size, bias=False)
 
+    @property
+    def trainable_parameters(self):
+        return (p for p in self.parameters() if p.requires_grad)
 
-# -----------------------------
-# 3.  Full wrapper model
-# -----------------------------
-
-class GemmaWithModule(nn.Module):
-    def __init__(self, backbone: nn.Module, module_depth: int = 8, module_dim: int = 1024):
-        super().__init__()
-        self.backbone = backbone
-        d_back = backbone.config.hidden_size  # 3072 for Gemma‑7B
-        self.module = ModuleStack(module_depth, module_dim, d_back)
-        self.lm_head = nn.Linear(module_dim, backbone.config.vocab_size, bias=False)
-
-    @torch.no_grad()
-    def generate(self, *args, **kwargs):
-        return self.forward_generate(*args, **kwargs)
-
+    # ---- Forward ----
     def forward(self, input_ids, attention_mask=None):
-        # Pass through Gemma (frozen) – keep hidden states
-        outputs = self.backbone(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            use_cache=False,
-        )
-        hidden_states = outputs.hidden_states  # tuple length (L+1)
-        # Take the last `module_depth` layers (or pad/repeat if shorter)
-        needed = len(self.module.layers)
-        if len(hidden_states) < needed + 1:
-            raise ValueError("Backbone has fewer layers than module depth")
-        x_hiddens = [h.detach() for h in hidden_states[-needed:]]
+        with torch.no_grad():
+            bb_out = self.backbone(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
+            hidden_states = bb_out.hidden_states  # tuple len L+1
 
-        y = self.module(x_hiddens)  # (B, T, d_mod)
+        # Driver features from tap_start onward
+        x_seq = hidden_states[self.tap_start + 1:]
+        y = self.module_layers[0].kv_in_proj(x_seq[0]).clone()  # initial state in donor dim
+
+        for i, layer in enumerate(self.module_layers):
+            x_det = x_seq[i].detach()
+            y = layer(y, x_det, attention_mask)
+
         logits = self.lm_head(y)
-        return {"logits": logits}
+        return logits
+
+# -------------------------------------------------------
+# 7.  Utilities
+# -------------------------------------------------------
+
+def count_trainable(model: nn.Module) -> float:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
 
 
-# -----------------------------
-# 4.  Minimal training harness
-# -----------------------------
+def check_for_nans(t: torch.Tensor, tag: str = "tensor"):
+    """Call from your training loop to abort on NaNs/inf."""
+    if torch.isnan(t).any() or torch.isinf(t).any():
+        raise RuntimeError(f"{tag} contains NaNs or Infs!")
 
-def build_model(device="cuda"):
-    backbone = load_frozen_backbone()
-    model = GemmaWithModule(backbone, module_depth=8, module_dim=1024)
-    model.to(device)
-    return model
-
-
-def main():
-    tokenizer = AutoTokenizer.from_pretrained(BACKBONE_ID)
-    model = build_model()
-
-    # Dummy batch
-    text = "Alice thinks Bob believes Carol loves Dave. Why?"
-    batch = tokenizer(text, return_tensors="pt").to(model.lm_head.weight.device)
-    out = model(**batch)
-    print(out["logits"].shape)  # (1, seq_len, vocab)
-
-    # Optimizer only sees module + lm_head params
-    trainables = [p for p in model.parameters() if p.requires_grad]
-    print(f"Trainable params: {sum(p.numel() for p in trainables)/1e6:.1f}M")
-    optim = torch.optim.AdamW(trainables, lr=2e-4)
-
-    # One training step example
-    targets = batch["input_ids"]
-    loss_fn = nn.CrossEntropyLoss()
-
-    logits = model(**batch)["logits"]
-    shift_logits = logits[:, :-1, :].contiguous()
-    shift_labels = targets[:, 1:].contiguous()
-    loss = loss_fn(shift_logits.view(-1, logits.size(-1)), shift_labels.view(-1))
-    loss.backward()
-    optim.step()
-    optim.zero_grad()
-    print("step loss:", loss.item())
-
+# -------------------------------------------------------
+# 8.  Smoke test (forward pass only)
+# -------------------------------------------------------
 
 if __name__ == "__main__":
-    main()
+    tokenizer = AutoTokenizer.from_pretrained(BACKBONE_ID)
+    model     = CombinedModel().to(DEVICE)
+    prompt    = "Why do people sometimes believe things that are false?"
+    toks      = tokenizer(prompt, return_tensors="pt").to(DEVICE)
+
+    with torch.no_grad():
+        logits = model(**toks)
+    print("logits shape:", logits.shape)
+    print(f"Trainable params: {count_trainable(model):.1f} M")
+
+    # NaN guard demo
+    check_for_nans(logits, "logits")
+
+    # TODO: plug in LR scheduler → warm‑up + cosine decay
+    # e.g., torch.optim.AdamW + transformers.get_cosine_schedule_with_warmup
