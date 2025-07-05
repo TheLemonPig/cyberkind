@@ -1,6 +1,9 @@
 import os
 import sys
 
+# maximum context length (tokens) to prevent overflow during tokenization
+context_length = 1024
+
 # Resolve project_root = one level up from this script
 script_dir   = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
@@ -11,12 +14,15 @@ sys.path.insert(0, project_root)
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM, default_data_collator
+from transformers import EarlyStoppingCallback
 from dataclasses import dataclass
 from models.behavior_llm_old import GemmaWithModule
 from accelerate import Accelerator
 from trl import SFTTrainer, SFTConfig
 from utils.logging import init_wandb
 from datasets import load_dataset, concatenate_datasets
+import glob, shutil
+from bitsandbytes.optim import Adam8bit
 
 # -----------------------------
 
@@ -70,6 +76,14 @@ splits = combined.train_test_split(test_size=0.1, seed=42)
 train_raw = splits["train"]
 eval_raw  = splits["test"]
 
+# Remove examples whose raw token count exceeds context_length
+train_raw = train_raw.filter(
+    lambda ex: len(tokenizer(ex.get("text", "") or "", add_special_tokens=False).input_ids) <= context_length
+)
+eval_raw = eval_raw.filter(
+    lambda ex: len(tokenizer(ex.get("text", "") or "", add_special_tokens=False).input_ids) <= context_length
+)
+
 
 # Dummy batch
 text = "Alice thinks Bob believes Carol loves Dave. Why?"
@@ -115,7 +129,7 @@ def preprocess(example):
     tokenized = tokenizer(
         text,
         truncation=True,
-        max_length=1024,
+        max_length=context_length,
         padding="max_length",
     )
     # For causal LM, labels = input_ids (standard SFT)
@@ -126,6 +140,9 @@ def preprocess(example):
 processed_train = train_raw.map(preprocess, batched=False)
 processed_eval  = eval_raw.map(preprocess,  batched=False)
 
+# Enable gradient checkpointing to reduce activation memory
+model.gradient_checkpointing_enable()
+
 # Define SFT training configuration
 sft_config = SFTConfig(
     train_batch_size=8,               # adjust as needed for your hardware
@@ -135,10 +152,21 @@ sft_config = SFTConfig(
     logging_steps=50,                  # log every N steps
     evaluation_strategy="steps",       # run evaluation every eval_steps
     eval_steps=500,                    # adjust to your preferred frequency
-    save_strategy="epoch",             # save checkpoints each epoch
+    save_strategy="steps",             # checkpoint by steps
+    save_steps=100,                    # every 100 steps
+    save_total_limit=1,                # keep only the most recent
     report_to="wandb",                 # enable reporting to Weights & Biases
+    gradient_checkpointing=True,
+    lr_scheduler_type="cosine",    # or "linear", "polynomial", etc.
+    warmup_ratio=0.1,              # warm up for 10% of total training steps
+    max_grad_norm=1.0,            # gradient clipping
+    eval_accumulation_steps=2,  # accumulate eval results for better metrics
     output_dir=os.path.join(project_root, "sft_output")  # where to save checkpoints
 )
+
+# Use 8-bit Adam for trainable parameters
+trainable_params = [p for p in model.parameters() if p.requires_grad]
+optimizer = Adam8bit(trainable_params, lr=sft_config.learning_rate)
 
 # Initialize the SFT trainer with train and eval datasets
 trainer = SFTTrainer(
@@ -147,15 +175,38 @@ trainer = SFTTrainer(
     args=sft_config,
     train_dataset=processed_train,
     eval_dataset=processed_eval,
-    data_collator=default_data_collator
+    callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
+    data_collator=default_data_collator,
+    optimizers=(optimizer, None),  # use 8-bit Adam
 )
 
-# Start training
-trainer.train()
+# -----------------------------
+# 5.  Automatic-restart training loop for spot instances
+# -----------------------------
+def cleanup_checkpoints(output_dir, keep=1):
+    ckpts = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")), key=os.path.getmtime)
+    for ckpt in ckpts[:-keep]:
+        shutil.rmtree(ckpt)
 
-# -----------------------------
-# 5.  Clean exit
-# -----------------------------
+attempt = 0
+while True:
+    try:
+        # find last checkpoint if any
+        last_ckpts = sorted(glob.glob(os.path.join(sft_config.output_dir, "checkpoint-*")), key=os.path.getmtime)
+        resume = last_ckpts[-1] if last_ckpts else None
+        trainer.train(resume_from_checkpoint=resume)
+        break
+    except Exception as e:
+        print(f"Interrupted ({e}), restarting from last checkpoint...")
+        cleanup_checkpoints(sft_config.output_dir, keep=1)
+        attempt += 1
+        if attempt >= 5:
+            raise
+
+# Final barrier and pod shutdown
 accelerator.wait_for_everyone()
 if accelerator.is_main_process:
     print("Training complete, shutting down pod.")

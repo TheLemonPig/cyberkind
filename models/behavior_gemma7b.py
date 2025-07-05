@@ -137,7 +137,10 @@ class GemmaModular(nn.Module):
 
 # ────────────────────────────────────────────────────────────────────────────
 def build_modular_model():
-    base = AutoModelForCausalLM.from_pretrained(BASE_MODEL_ID, torch_dtype=DTYPE, device_map="auto")
+    base = AutoModelForCausalLM.from_pretrained(BASE_MODEL_ID,
+                                                load_in_8bit=True,
+                                                torch_dtype=DTYPE,
+                                                device_map="auto")
     return GemmaModular(base).to(DEVICE, dtype=DTYPE)
 
 # quick equivalence check
@@ -145,7 +148,10 @@ if __name__ == "__main__":
     tok = AutoTokenizer.from_pretrained(BASE_MODEL_ID)
     prompt = "Sally hides a marble in a basket. Anne moves it to the box. Where will Sally look?"
     inp = tok(prompt, return_tensors="pt").to(DEVICE)
-    base = AutoModelForCausalLM.from_pretrained(BASE_MODEL_ID, torch_dtype=DTYPE, device_map="auto").eval()
+    base = AutoModelForCausalLM.from_pretrained(BASE_MODEL_ID,
+                                                load_in_8bit=True,
+                                                torch_dtype=DTYPE,
+                                                device_map="auto").eval()
     mod  = build_modular_model().eval()
     with torch.no_grad():
         diff = (base(**inp).logits - mod(**inp)).abs().max().item()
