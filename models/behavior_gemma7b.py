@@ -1,19 +1,20 @@
 # gemma_modular.py (final revision)
-"""Gemma‑7B with fronto-posterior module and sigmoid-gated highways.
+"""Gemma‑7B with fronto‑posterior module and sigmoid‑gated highways.
 
 Design recap:
-• Frozen backbone: all original Gemma blocks 0 … N-1
-• Trainable module: deep‑copied last N/3 blocks (blocks split…N-1)
+• Frozen backbone: all original Gemma blocks 0 … N‑1
+• Trainable module: deep‑copied last N/3 blocks (blocks split…N‑1)
 
 Each module block performs:
-  1. Cross-attention (module queries, backbone keys/values)
+  1. Hybrid attention (half self, half cross) using cloned weights
   2. Additive gated driver from backbone
   3. Residual update
-  4. Feed-forward (copied FFN) — original self-attn disabled by default
+  4. Feed‑forward (copied FFN) — original self‑attn disabled by default
   5. Feedback gated highway output to next backbone input
 
-Highways use σ(W_g x) ⊙ (W_h x), zero‑initialized to start inert.
+Highways use σ(W_g x) ⊙ (W_h x), zero‑initialised to start inert.
 """
+# gemma_modular.py (final revision)
 
 import copy
 from typing import Optional
@@ -49,11 +50,11 @@ class CrossAttentionFromSelf(nn.Module):
         num_heads = getattr(self_attn, 'num_heads', None) or getattr(self_attn, 'n_heads', None)
         if num_heads and hidden % int(num_heads) == 0:
             self.num_heads = int(num_heads)
-            self.head_dim = hidden // self.num_heads
         else:
             # fallback to single head
-            self.num_heads = 1
-            self.head_dim = hidden
+            self.num_heads = 16  # I looked it up, Gemma uses 16 heads
+            print(f"Warning: {self_attn.__class__.__name__} has no num_heads or n_heads, assuming 16 heads.")
+        self.head_dim = hidden // self.num_heads
         self.scale = self.head_dim ** -0.5
         # optional rotary embeddings
         self.rotary = copy.deepcopy(getattr(self_attn, 'rotary_emb', None))
@@ -86,6 +87,82 @@ class CrossAttentionFromSelf(nn.Module):
         return self.o_proj(out)
 
 # ---------------------------------------------------------------------------
+class HybridAttention(nn.Module):
+    """
+    Split-head attention:
+      • first `n_self` heads attend to (queries = x_q, keys/values = x_q)  ➜ self‑attn
+      • remaining heads attend to (queries = x_q, keys/values = x_kv)     ➜ cross‑attn
+
+    All projection matrices are cloned from Gemma so logits at t=0 remain identical.
+    """
+    def __init__(self, orig_attn: nn.Module, n_self: int, mirror: bool = False):
+        super().__init__()
+        hidden = orig_attn.q_proj.out_features
+        self.n_self = n_self
+        self.n_total = getattr(orig_attn, 'num_heads', None) or getattr(orig_attn, 'n_heads')
+        if mirror:
+            # swap halves: self heads are the last n_self heads instead of first
+            self.self_index_start = self.n_total - n_self
+        else:
+            self.self_index_start = 0
+        self.head_dim = hidden // self.n_total
+        # Clone shared Q and O
+        # separate output projections for self‑ vs cross‑heads (identical at t=0)
+        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj)
+        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj)
+        self.o_proj = copy.deepcopy(orig_attn.o_proj)
+        # Clone K/V for self and cross separately
+        self.k_self = copy.deepcopy(orig_attn.k_proj)
+        self.v_self = copy.deepcopy(orig_attn.v_proj)
+        self.k_cross = copy.deepcopy(orig_attn.k_proj)
+        self.v_cross = copy.deepcopy(orig_attn.v_proj)
+        # Rotary + dropout
+        self.rotary  = copy.deepcopy(getattr(orig_attn, 'rotary_emb', None))
+        drop = getattr(orig_attn, 'dropout', None)
+        self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
+        self.scale = self.head_dim ** -0.5
+
+    def _reshape(self, x, b):  # (B,T,Hd) ➜ (B,H,T,d)
+        return x.view(b, -1, self.n_total, self.head_dim).transpose(1, 2)
+
+    def forward(self, x_q, x_kv, mask=None):
+        B = x_q.size(0)
+        q = self._reshape(self.q_proj(x_q), B)                     # (B,H,T,d)
+        k_self = self._reshape(self.k_self(x_q), B)
+        v_self = self._reshape(self.v_self(x_q), B)
+        k_cross = self._reshape(self.k_cross(x_kv), B)
+        v_cross = self._reshape(self.v_cross(x_kv), B)
+
+        i0 = self.self_index_start
+        i1 = i0 + self.n_self
+        q_self  = q[:,  i0:i1]
+        k_s     = k_self[:, i0:i1]
+        v_s     = v_self[:, i0:i1]
+
+        # cross heads are the complement
+        q_cross = torch.cat([q[:, :i0],  q[:, i1:]], dim=1)
+        k_c     = torch.cat([k_cross[:, :i0], k_cross[:, i1:]], dim=1)
+        v_c     = torch.cat([v_cross[:, :i0], v_cross[:, i1:]], dim=1)
+
+        if self.rotary is not None:
+            q_self, k_s = self.rotary(q_self, k_s)
+            q_cross, k_c = self.rotary(q_cross, k_c)
+
+        def attn_block(qh, kh, vh):
+            w = (qh @ kh.transpose(-2, -1)) * self.scale
+            if mask is not None: w = w + mask
+            w = self.dropout(torch.softmax(w, dim=-1))
+            out = w @ vh
+            return out
+
+        out_self  = attn_block(q_self,  k_s, v_s)
+        out_cross = attn_block(q_cross, k_c, v_c)
+        out = torch.cat([out_self, out_cross], dim=1)              # (B,H,T,d)
+        out_flat = out.transpose(1, 2).reshape(B, -1, self.n_total * self.head_dim)
+        out_final = 0.5 * (self.o_proj_self(out_flat) + self.o_proj_cross(out_flat))
+        return out_final
+
+# ---------------------------------------------------------------------------
 class GatedHighway(nn.Module):
     """σ(W_g x) ⊙ (W_h x), zero‑initialized to produce 0 at start."""
     def __init__(self, dim: int):
@@ -114,11 +191,8 @@ class ModuleBlock(nn.Module):
         # so just take it as-is and disable its self-attn
         self.block = src_block
         self.block.self_attn = nn.Identity()
-        # cross-attention
-        # for d in range(torch.cuda.device_count()):
-        #     print(f"--- Device {d} ---")
-        #     print(torch.cuda.memory_summary(f"cuda:{d}"))
-        self.cross_attn = CrossAttentionFromSelf(orig_attn)
+        # hybrid: 4 self heads + 4 cross heads
+        self.hybrid_attn = HybridAttention(orig_attn, n_self=self.cross_attn.num_heads//2 if hasattr(orig_attn,'num_heads') else orig_attn.n_heads//2)
         self.cross_ln = nn.RMSNorm(hidden, eps=1e-5)
         # highways
         self.driver = GatedHighway(hidden)
@@ -127,9 +201,9 @@ class ModuleBlock(nn.Module):
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
         # feedback signal to next backbone layer
         delta = self.feedback(x_mod)
-        # modulator: cross-attn
+        # modulator: hybrid attention (half self, half cross)
         kv = x_back  # detach if hard isolation needed: x_back.detach()
-        mod = self.cross_attn(self.cross_ln(x_mod), kv, mask)
+        mod = self.hybrid_attn(self.cross_ln(x_mod), kv, mask)
         # driver
         drv = self.driver(x_back)
         # combine
@@ -189,6 +263,12 @@ class GemmaModular(nn.Module):
         for back_layer, mod_block in zip(self.backbone_layers[self.split:], self.mod_layers):
             # backbone with feedback
             h_back = back_layer(h_back + feedback, attention_mask=mask, output_attentions=False)[0]
+            # allow backbone to attend module via hybrid heads
+            if not hasattr(back_layer, 'hybrid_extra'):
+                n_self = back_layer.self_attn.num_heads // 2
+                back_layer.hybrid_extra = HybridAttention(orig_attn=back_layer.self_attn, n_self=n_self, mirror=True)
+                back_layer.hybrid_extra.to(h_back.device)
+            h_back = h_back + back_layer.hybrid_extra(h_back, h_mod.detach(), mask)
             # module step
             h_mod, feedback = mod_block(h_mod, h_back, mask)
         return self.lm_head(self.ln_f(h_mod))
