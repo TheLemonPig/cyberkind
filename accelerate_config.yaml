@@ -1,30 +1,13 @@
 # accelerate_config.yaml
+
 compute_environment: LOCAL_MACHINE
-distributed_type: DEEPSPEED
+distributed_type: MULTI_GPU
 mixed_precision: bf16
-downcast_bf16: 'no'
-debug: false
-
-# Deepspeed configuration
-deepspeed_config:
-  deepspeed_multinode_launcher: standard
-  offload_optimizer_device: none
-  offload_param_device: none
-  zero3_init_flag: true
-  zero3_save_16bit_model: true
-  zero_stage: 3
-
-# single-machine training
-num_machines: 1
-machine_rank: 0
-main_process_ip: null
-main_process_port: 29500
-
-# number of parallel processes = number of GPUs
-num_processes: 4    # ← change this to your GPU count
-
-# rendez-vous
-rdzv_backend: static
-same_network: true
-
 use_cpu: false
+
+# Tell Accelerate how many GPUs / processes
+num_processes: 4
+num_machines: 1
+
+
+
