@@ -1,3 +1,89 @@
+# ---------------------------------------------------------------------------
+# Backbone hybrid: duplicate 8 heads for cross-attn (in-layer, not post-hoc)
+class DupHybridAttention(nn.Module):
+    """
+    Backbone modulation: duplicates `n_cross` heads from the original self‑attn
+    and repurposes them as cross‑attention heads. A sigmoid gate (init 0) keeps
+    logits identical at t=0.
+
+    • Self heads (orig) remain frozen.
+    • New cross heads re‑use cloned K/V/O weights; Q is shared.
+    """
+    def __init__(self, orig_attn: nn.Module, n_cross: int = 8):
+        super().__init__()
+        hidden = orig_attn.q_proj.out_features
+        total = getattr(orig_attn, "num_heads", None) or getattr(orig_attn, "n_heads")
+        d = hidden // total
+
+        # Clone Q shared across all heads
+        self.q_proj = copy.deepcopy(orig_attn.q_proj)
+
+        # Original self K/V/O keep first `hidden` dims
+        self.k_self  = orig_attn.k_proj                # frozen
+        self.v_self  = orig_attn.v_proj
+        self.o_self  = orig_attn.o_proj
+
+        # Duplicate last `n_cross` heads for cross‑attention
+        start = hidden - n_cross * d
+        def slice_linear(src, out_features, is_out=False):
+            layer = nn.Linear(src.in_features if not is_out else out_features,
+                              out_features, bias=False)
+            w = src.weight.data.detach().cpu()
+            layer.weight.data.copy_(w[start: ] if not is_out else w[:, start:])
+            return layer
+
+        self.k_cross = slice_linear(orig_attn.k_proj, n_cross * d)
+        self.v_cross = slice_linear(orig_attn.v_proj, n_cross * d)
+        self.o_cross = slice_linear(orig_attn.o_proj, hidden, is_out=True)
+
+        self.n_self = total
+        self.n_cross = n_cross
+        self.head_dim = d
+        self.scale = d ** -0.5
+        self.rotary = copy.deepcopy(getattr(orig_attn, "rotary_emb", None))
+        self.dropout = nn.Dropout(getattr(orig_attn, "dropout", nn.Dropout(0.0)).p)
+        self.gate = nn.Parameter(torch.zeros(1))  # starts closed
+
+        # freeze original self projections
+        for p in (self.k_self.parameters(), self.v_self.parameters(), self.o_self.parameters()):
+            for t in p: t.requires_grad = False
+
+    def _reshape(self, x, B, heads):
+        return x.view(B, -1, heads, self.head_dim).transpose(1, 2)
+
+    def forward(self, h_back, h_mod, mask=None):
+        if self.gate.item() == 0:
+            return h_back  # early‑exit, no change
+
+        B = h_back.size(0)
+        q = self._reshape(self.q_proj(h_back), B, self.n_self + self.n_cross)
+
+        k_self = self._reshape(self.k_self(h_back), B, self.n_self)
+        v_self = self._reshape(self.v_self(h_back), B, self.n_self)
+
+        k_cross = self._reshape(self.k_cross(h_mod), B, self.n_cross)
+        v_cross = self._reshape(self.v_cross(h_mod), B, self.n_cross)
+
+        q_self, q_cross = torch.split(q, [self.n_self, self.n_cross], dim=1)
+
+        if self.rotary is not None:
+            q_self, k_self = self.rotary(q_self, k_self)
+            q_cross, k_cross = self.rotary(q_cross, k_cross)
+
+        def attn(qh, kh, vh):
+            w = (qh @ kh.transpose(-2, -1)) * self.scale
+            if mask is not None: w = w + mask
+            w = self.dropout(torch.softmax(w, dim=-1))
+            return w @ vh
+
+        out_self  = attn(q_self,  k_self,  v_self)   # (B,Hs,T,d)
+        out_cross = attn(q_cross, k_cross, v_cross)  # (B,Hc,T,d)
+        out = torch.cat([out_self, out_cross], dim=1)
+        out = out.transpose(1,2).reshape(B, -1, (self.n_self+self.n_cross)*self.head_dim)
+
+        # combine outputs: original path + gated cross path
+        gated = torch.sigmoid(self.gate)
+        return self.o_self(out) + gated * self.o_cross(out)
 # gemma_modular.py (final revision)
 """Gemma‑7B with fronto‑posterior module and sigmoid‑gated highways.
 
@@ -191,16 +277,31 @@ class ModuleBlock(nn.Module):
         # so just take it as-is and disable its self-attn
         self.block = src_block
         self.block.self_attn = nn.Identity()
-        # hybrid: 4 self heads + 4 cross heads
-        self.hybrid_attn = HybridAttention(orig_attn, n_self=self.cross_attn.num_heads//2 if hasattr(orig_attn,'num_heads') else orig_attn.n_heads//2)
+        # hybrid: 8 self heads + 8 cross heads
+        # robust head count retrieval
+        total_heads = (
+            getattr(orig_attn, "num_heads", None)
+            or getattr(orig_attn, "n_heads", None)
+            or 16  # Gemma default
+        )
+        n_self = total_heads // 2
+
+        # hybrid attention: first n_self heads = self, rest = cross
+        self.hybrid_attn = HybridAttention(orig_attn, n_self=n_self, mirror=False)
         self.cross_ln = nn.RMSNorm(hidden, eps=1e-5)
         # highways
         self.driver = GatedHighway(hidden)
-        self.feedback = GatedHighway(hidden)
+
+        # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
+        #   • weight zero‑init  → delta = 0 at t0
+        #   • gate starts at 0  → tanh(0)=0 so path closed
+        self.w_fb   = nn.Linear(hidden, hidden, bias=False)
+        nn.init.zeros_(self.w_fb.weight)
+        self.gate_fb = nn.Parameter(torch.zeros(1))   # trainable scalar
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
-        # feedback signal to next backbone layer
-        delta = self.feedback(x_mod)
+        # feedback signal to next backbone layer (scalar‑gated)
+        delta = torch.tanh(self.gate_fb) * self.w_fb(x_mod)   # bounded in (–1,+1)
         # modulator: hybrid attention (half self, half cross)
         kv = x_back  # detach if hard isolation needed: x_back.detach()
         mod = self.hybrid_attn(self.cross_ln(x_mod), kv, mask)
@@ -260,16 +361,10 @@ class GemmaModular(nn.Module):
         h_mod = h_back.clone()
         feedback = torch.zeros_like(h_back)
         # paired layers
-        for back_layer, mod_block in zip(self.backbone_layers[self.split:], self.mod_layers):
-            # backbone with feedback
+        for back_layer, mod_block in zip(
+            self.backbone_layers[self.split:], self.mod_layers
+        ):
             h_back = back_layer(h_back + feedback, attention_mask=mask, output_attentions=False)[0]
-            # allow backbone to attend module via hybrid heads
-            if not hasattr(back_layer, 'hybrid_extra'):
-                n_self = back_layer.self_attn.num_heads // 2
-                back_layer.hybrid_extra = HybridAttention(orig_attn=back_layer.self_attn, n_self=n_self, mirror=True)
-                back_layer.hybrid_extra.to(h_back.device)
-            h_back = h_back + back_layer.hybrid_extra(h_back, h_mod.detach(), mask)
-            # module step
             h_mod, feedback = mod_block(h_mod, h_back, mask)
         return self.lm_head(self.ln_f(h_mod))
 
