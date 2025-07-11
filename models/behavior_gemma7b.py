@@ -93,6 +93,10 @@ class HybridAttention(nn.Module):
         else:
             self.self_index_start = 0
         self.head_dim = hidden // self.n_total
+
+        # Clone shared Q projection (was missing)
+        self.q_proj = copy.deepcopy(orig_attn.q_proj)
+
         # Clone shared Q and O
         # separate output projections for self‑ vs cross‑heads (identical at t=0)
         self.o_proj_self  = copy.deepcopy(orig_attn.o_proj)
@@ -132,13 +136,10 @@ class HybridAttention(nn.Module):
         v_c     = torch.cat([v_cross[:, :i0], v_cross[:, i1:]], dim=1)
 
         if self.rotary is not None:
-            seq_len = q_self.size(-2)          # T
-            # Gemma rotary returns (cos, sin) buffers
-            cos, sin = self.rotary(seq_len, q_self.dtype, q_self.device)
-            # Apply to self‑heads
-            q_self, k_s = apply_rotary_pos_emb(q_self, k_s, cos, sin, None)
-            # Apply same embedding to cross‑heads
-            q_cross, k_c = apply_rotary_pos_emb(q_cross, k_c, cos, sin, None)
+            seq_len = q_self.size(-2)
+            pos_emb = self.rotary(seq_len, q_self.dtype, q_self.device)  # returns (seq_len, 1, head_dim*2)
+            q_self, k_s   = apply_rotary_pos_emb(q_self,  k_s,  pos_emb, None)
+            q_cross, k_c  = apply_rotary_pos_emb(q_cross, k_c, pos_emb, None)
 
         def attn_block(qh, kh, vh):
             w = (qh @ kh.transpose(-2, -1)) * self.scale
