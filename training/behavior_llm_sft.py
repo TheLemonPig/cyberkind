@@ -31,7 +31,7 @@ time.sleep(0.1)
 
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM, default_data_collator
-from transformers import EarlyStoppingCallback, BitsAndBytesConfig
+from transformers import EarlyStoppingCallback, BitsAndBytesConfig, TrainingArguments
 from dataclasses import dataclass
 from models.behavior_gemma7b import GemmaModular
 from accelerate import Accelerator
@@ -103,7 +103,7 @@ if load_in_8bit:
     llm_int8_has_fp16_weight=False,    # optional
     )
     rank = accelerator.local_process_index
-    accelerator.print(f"[Rank {rank}] about to load backbone on GPU {torch.cuda.current_device()}")
+    print(f"[Rank {rank}] about to load backbone on GPU {torch.cuda.current_device()}")
     print(f"[Rank {rank}/{world_size}] 📦 loading model now…", flush=True)
     backbone = AutoModelForCausalLM.from_pretrained(
     BACKBONE_ID,
@@ -113,7 +113,7 @@ if load_in_8bit:
     token=hf_token,
     )
     print(f"[Rank {rank}/{world_size}] 📦 done loading model", flush=True)
-    accelerator.print(f"[Rank {rank}] finished loading backbone")
+    print(f"[Rank {rank}] finished loading backbone")
 else:
     backbone = AutoModelForCausalLM.from_pretrained(
         BACKBONE_ID,
@@ -123,16 +123,20 @@ else:
         token=hf_token,
     )
 backbone.gradient_checkpointing_enable()
-accelerator.print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
+print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
 model = GemmaModular(backbone)
+print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
+model.to(accelerator.device)
+# model = accelerator.prepare(model)
 # Use 8-bit Adam for trainable parameters
 trainable_params = [p for p in model.parameters() if p.requires_grad]
+print(f"[Rank {rank}] parameters catalogued on {accelerator.device}")
 optimizer = Adam8bit(trainable_params, lr=learning_rate)
+print(f"[Rank {rank}] optimizer built on {accelerator.device}")
+# optimizer = accelerator.prepare(optimizer)
 # Use this if you are initializing your own optimizer – due to funky 8bit stuff I am leaving it to SFTTrainer
-model, optimizer = accelerator.prepare(
-    model, optimizer
-)
-accelerator.print(f"[Rank {rank}] model & optimizer ready on {accelerator.device}")
+
+print(f"[Rank {rank}] model & optimizer ready on {accelerator.device}")
 
 
 ## Uncomment these lines to check loading for Deepspeed
@@ -184,26 +188,26 @@ def preprocess(example):
     return tokenized
 
 # only main process does the heavy map/filter
-if accelerator.is_local_main_process:
-    combined = concatenate_datasets([alpaca, dolly, openassistant]).shuffle(seed=42)
-    splits   = combined.train_test_split(test_size=0.1, seed=42)
-    train_raw, eval_raw = splits["train"], splits["test"]
+# if accelerator.is_local_main_process:
+combined = concatenate_datasets([alpaca, dolly, openassistant]).shuffle(seed=42)
+splits   = combined.train_test_split(test_size=0.1, seed=42)
+train_raw, eval_raw = splits["train"], splits["test"]
 
-    # filter
-    train_raw = train_raw.filter(lambda ex: bool(ex.get("text")))
-    eval_raw  = eval_raw.filter(lambda ex: bool(ex.get("text")))
+# filter
+train_raw = train_raw.filter(lambda ex: bool(ex.get("text")))
+eval_raw  = eval_raw.filter(lambda ex: bool(ex.get("text")))
 
-    # tokenize
-    processed_train = train_raw.map(preprocess, batched=False)
-    processed_eval  = eval_raw.map(preprocess, batched=False)
+# tokenize
+processed_train = train_raw.map(preprocess, batched=False)
+processed_eval  = eval_raw.map(preprocess, batched=False)
 
-    # save to disk for the others
-    processed_train.save_to_disk("train_ds")
-    processed_eval.save_to_disk("eval_ds")
-accelerator.wait_for_everyone()
+# # save to disk for the others
+# processed_train.save_to_disk("train_ds")
+# processed_eval.save_to_disk("eval_ds")
+# # accelerator.wait_for_everyone()
 
-processed_train = load_from_disk("train_ds")
-processed_eval  = load_from_disk("eval_ds")
+# processed_train = load_from_disk("train_ds")
+# processed_eval  = load_from_disk("eval_ds")
 
 # processed_train = load_dataset("train_ds")
 # processed_eval  = load_dataset("eval_ds")
@@ -235,13 +239,11 @@ if include_test:
 
 # Define SFT training configuration
 sft_config = SFTConfig(
-    train_batch_size=6,               # adjust as needed for your hardware
+    per_device_train_batch_size=6,               # adjust as needed for your hardware
     gradient_accumulation_steps=1,     # adjust to simulate larger batches if needed
     learning_rate=learning_rate,                # match your optimizer setting
     num_train_epochs=3,                # set number of epochs
     logging_steps=50,                  # log every N steps
-    evaluation_strategy="steps",       # run evaluation every eval_steps
-    eval_steps=500,                    # adjust to your preferred frequency
     save_strategy="steps",             # checkpoint by steps
     save_steps=100,                    # every 100 steps
     save_total_limit=1,                # keep only the most recent
@@ -255,6 +257,23 @@ sft_config = SFTConfig(
     optim="adamw_bnb_8bit",
 )
 
+training_args = TrainingArguments(
+    output_dir="sft_output",
+    per_device_train_batch_size=6,
+    per_device_eval_batch_size=6,
+    eval_steps=500,
+    save_strategy="steps",
+    save_steps=100,
+    logging_steps=50,
+    num_train_epochs=3,
+    gradient_accumulation_steps=1,
+    learning_rate=learning_rate,
+    lr_scheduler_type="cosine",
+    warmup_ratio=0.1,
+    max_grad_norm=1.0,
+    report_to="wandb"
+)
+
 
 
 total = sum(p.numel() for p in trainable_params)
@@ -266,7 +285,8 @@ print("Using batch size:", sft_config.train_batch_size)
 trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
-    args=sft_config,
+    config=sft_config,
+    args=training_args,
     train_dataset=processed_train,
     eval_dataset=processed_eval,
     callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
