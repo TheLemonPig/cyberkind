@@ -81,7 +81,11 @@ class HybridAttention(nn.Module):
         super().__init__()
         hidden = orig_attn.q_proj.out_features
         self.n_self = n_self
-        self.n_total = getattr(orig_attn, 'num_heads', None) or getattr(orig_attn, 'n_heads')
+        self.n_total = (
+            getattr(orig_attn, 'num_heads', None)
+            or getattr(orig_attn, 'n_heads', None)
+            or 16  # Gemma default when attribute missing
+        )
         if mirror:
             # swap halves: self heads are the last n_self heads instead of first
             self.self_index_start = self.n_total - n_self
