@@ -1,6 +1,17 @@
 
 ##Training
 
+For reasons I cannot discern you will need to run all of the below to get it to work
+
+```
+pip install -r requirements
+pip install transformers, trl, dotenv
+rm -rf /workspace/gemma/cyberkind/wandb
+pip install wandb
+```
+
+You will also need to setup accelerate config. (Passing the file doesn't seem to work)
+
 Run training with the following if your GPU is large enough (~48GB VRAM).
 
 ```
@@ -13,10 +24,7 @@ If your GPU is not big enough but you have multiple GPUs, then uncomment line 69
 
 Make sure to run the following to fix a bug I have not yet caught at the source:
 
-```
-rm -rf /workspace/gemma/cyberkind/wandb
-pip install wandb
-```
+
 
 Please also note that the `requirements.txt` has a few runpod-specific packages. To configure for other environments, focus on replacing all GPU-related packages and reinstalling locally.
 

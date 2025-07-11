@@ -51,7 +51,12 @@ load_in_8bit = True
 include_test = False
 learning_rate = 2e-4
 
-accelerator = Accelerator()
+accelerator = Accelerator(log_with="wandb")
+accelerator.init_trackers(
+    project_name="gemma_behavior_sft",
+    config={},
+    init_kwargs={"wandb": {"entity": "thelemonpig-cyberkind"}}
+)
 
 rank = accelerator.local_process_index
 world_size = accelerator.num_processes
@@ -61,28 +66,27 @@ time.sleep(rank * 0.1)
 
 print(f"[Rank {rank}/{world_size}] 🚀 after Accelerator()", flush=True)
 
-if accelerator.is_main_process:
-    load_dotenv()
-    print(f"[Rank 0/4] calling init_wandb()")
-    wandb.login(key=os.getenv("WANDB_API_KEY"))
-    wandb.init(project='cyberkind', resume='allow')
-else:
-    # start a no-op run – returns immediately, avoids network + disk traffic
-    print(f"[Rank {accelerator.local_process_index}/4] skipping init_wandb()")
-    # wandb.init(mode="disabled")
+# if accelerator.is_main_process:
+#     load_dotenv()
+#     print(f"[Rank 0/4] calling init_wandb()")
+#     wandb.login(key=os.getenv("WANDB_API_KEY"))
+#     wandb.init(project='cyberkind', resume='allow')
+# else:
+#     # start a no-op run – returns immediately, avoids network + disk traffic
+#     print(f"[Rank {accelerator.local_process_index}/4] skipping init_wandb()")
+#     # wandb.init(mode="disabled")
 
-print(f"[Rank {accelerator.local_process_index}/4] just before wait_for_everyone()", flush=True)
+# print(f"[Rank {accelerator.local_process_index}/4] just before wait_for_everyone()", flush=True)
 # accelerator.wait_for_everyone()
-print(f"[Rank {accelerator.local_process_index}/4] just before wait_for_everyone()", flush=True)
+# print(f"[Rank {accelerator.local_process_index}/4] just before wait_for_everyone()", flush=True)
 
 
-print(f"[Rank {rank}/{world_size}] ⏳ passed wait_for_everyone()", flush=True)
+# print(f"[Rank {rank}/{world_size}] ⏳ passed wait_for_everyone()", flush=True)
 
 # Now print which CUDA device this rank thinks it has
 print(f"[Rank {rank}/{world_size}] using device {accelerator.device}"
       f" (torch.cuda.current_device() -> {torch.cuda.current_device()})", flush=True)
 
-accelerator.wait_for_everyone()
 print(f"[Rank {rank}/{world_size}] ✅ ready to load model", flush=True)
 
 tokenizer = AutoTokenizer.from_pretrained(
