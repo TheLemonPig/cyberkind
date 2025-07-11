@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.models.gemma.modeling_gemma import apply_rotary_pos_emb
 
 BASE_MODEL_ID = "google/gemma-7b"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -131,8 +132,13 @@ class HybridAttention(nn.Module):
         v_c     = torch.cat([v_cross[:, :i0], v_cross[:, i1:]], dim=1)
 
         if self.rotary is not None:
-            q_self, k_s = self.rotary(q_self, k_s)
-            q_cross, k_c = self.rotary(q_cross, k_c)
+            seq_len = q_self.size(-2)          # T
+            # Gemma rotary returns (cos, sin) buffers
+            cos, sin = self.rotary(seq_len, q_self.dtype, q_self.device)
+            # Apply to self‑heads
+            q_self, k_s = apply_rotary_pos_emb(q_self, k_s, cos, sin, None)
+            # Apply same embedding to cross‑heads
+            q_cross, k_c = apply_rotary_pos_emb(q_cross, k_c, cos, sin, None)
 
         def attn_block(qh, kh, vh):
             w = (qh @ kh.transpose(-2, -1)) * self.scale
