@@ -272,7 +272,7 @@ class GemmaModular(nn.Module):
         self.lm_head = copy.deepcopy(base.lm_head)
 
         # Ensure every frozen backbone block still has a rotary embedding
-        _ensure_rotary(self)
+        _ensure_rotary(self, self.config)
 
     def forward(
         self,
