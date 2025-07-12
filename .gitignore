@@ -15,3 +15,4 @@ models/.ipynb_checkpoints/
 training/.ipynb_checkpoints/
 utils/.ipynb_checkpoints/
 .ipynb_checkpoints/*
+wandb/*
