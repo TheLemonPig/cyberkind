@@ -16,3 +16,4 @@ training/.ipynb_checkpoints/
 utils/.ipynb_checkpoints/
 .ipynb_checkpoints/*
 wandb/*
+wandb/latest-run
