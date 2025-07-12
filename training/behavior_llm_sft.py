@@ -52,23 +52,6 @@ time.sleep(rank * 0.1)
 
 print(f"[Rank {rank}/{world_size}] 🚀 after Accelerator()", flush=True)
 
-# if accelerator.is_main_process:
-#     load_dotenv()
-#     print(f"[Rank 0/4] calling init_wandb()")
-#     wandb.login(key=os.getenv("WANDB_API_KEY"))
-#     wandb.init(project='cyberkind', resume='allow')
-# else:
-#     # start a no-op run – returns immediately, avoids network + disk traffic
-#     print(f"[Rank {accelerator.local_process_index}/4] skipping init_wandb()")
-#     # wandb.init(mode="disabled")
-
-# print(f"[Rank {accelerator.local_process_index}/4] just before wait_for_everyone()", flush=True)
-# accelerator.wait_for_everyone()
-# print(f"[Rank {accelerator.local_process_index}/4] just before wait_for_everyone()", flush=True)
-
-
-# print(f"[Rank {rank}/{world_size}] ⏳ passed wait_for_everyone()", flush=True)
-
 # Now print which CUDA device this rank thinks it has
 print(f"[Rank {rank}/{world_size}] using device {accelerator.device}"
       f" (torch.cuda.current_device() -> {torch.cuda.current_device()})", flush=True)
@@ -98,10 +81,6 @@ if load_in_8bit:
     output_hidden_states=True,
     token=hf_token,
     )
-    from transformers.models.gemma.modeling_gemma import GemmaAttention
-    print(textwrap.dedent(
-    inspect.getsource(GemmaAttention.forward)
-    ).splitlines()[0:20])
     print(f"[Rank {rank}/{world_size}] 📦 done loading model", flush=True)
     print(f"[Rank {rank}] finished loading backbone")
 else:
@@ -112,148 +91,8 @@ else:
         output_hidden_states=True,
         token=hf_token,
     )
-def check_rotary(model):
-    missing = []
-    for idx, bl in enumerate(model.backbone_layers):
-        attn = bl.self_attn
-        dev  = next(attn.parameters()).device
-        if getattr(attn, "rotary_emb", None) is None:
-            missing.append((idx, str(dev)))
-    if torch.distributed.get_rank() == 0:   # only rank-0 prints
-        if missing:
-            print(">>> Layers missing rotary_emb:")
-            for idx, dev in missing:
-                print(f"    layer {idx} on {dev}")
-        else:
-            print(">>> All backbone layers have rotary_emb")
-
-def inspect_rotary(model):
-    print("\n[rotary diagnostic]")
-    bad = []
-    for idx, bl in enumerate(model.backbone_layers):
-        attn = bl.self_attn
-        # ① does the attribute exist?
-        has_attr = hasattr(attn, "rotary_emb")
-        obj      = getattr(attn, "rotary_emb", None)
-        # ② correct type?  Gemma’s class name is "GemmaRotaryEmbedding"
-        cls_name = type(obj).__name__ if has_attr else "-"
-        # ③ is it callable and returns (cos,sin)?
-        ok_call  = False
-        if callable(obj):
-            try:
-                out = obj(2, torch.float32, torch.device("cpu"))
-                ok_call = isinstance(out, tuple) and len(out) == 2
-            except Exception:
-                pass
-        if not (has_attr and ok_call):
-            bad.append((idx, cls_name))
-    if bad:
-        print("missing or broken rotary embeddings in layers:")
-        for idx, cls_name in bad:
-            print(f"  layer {idx:<2d}  rotary_emb={cls_name}")
-    else:
-        print("✓ every layer has a working rotary_emb\n")
-def attach_bnb_keep(model):
-    """
-    Register a 1-byte buffer on every GemmaRotaryEmbedding so BnB’s
-    replacement pass keeps the module, even after deepcopy().
-    """
-    for mod in model.modules():
-        if isinstance(mod, GemmaRotaryEmbedding):
-            if not hasattr(mod, "bnb_keep"):
-                mod.register_buffer("bnb_keep", torch.zeros(1), persistent=False)
-def count_missing_rotary(msg, model):
-    miss = sum(
-        1 for bl in model.model.layers  # 28 Gemma blocks
-        if getattr(bl.self_attn, "rotary_emb", None) is None
-    )
-    print(f"{msg:<15}  missing={miss}")
-def debug_rotary(model, n_tokens: int = 4):
-    """
-    Checks every Gemma block for a working rotary embedding.
-    • OK   – attribute exists and call returns (cos, sin)
-    • MISS – attribute missing
-    • ERR  – call raises / returns something unexpected
-    """
-    # 1) locate the list of blocks
-    if hasattr(model, "backbone_layers"):        # GemmaModular
-        layers = model.backbone_layers
-    elif hasattr(model, "model") and hasattr(model.model, "layers"):  # raw Gemma
-        layers = model.model.layers
-    else:
-        raise ValueError("Cannot find Gemma layers on model")
-
-    print("\n[rotary debug]")
-    for idx, block in enumerate(layers):
-        attn = block.self_attn
-        tag, note = "OK", ""
-        if not hasattr(attn, "rotary_emb"):
-            tag, note = "MISS", "attribute missing"
-        else:
-            try:
-                device = next(attn.parameters()).device
-                hidden = torch.zeros(
-                    1, n_tokens, 1, attn.head_dim,
-                    device=device,
-                    dtype=attn.q_proj.weight.dtype,
-                )
-                cos, sin = attn.rotary_emb(hidden, None)
-                if not (isinstance(cos, torch.Tensor) and isinstance(sin, torch.Tensor)):
-                    tag, note = "ERR", "call did not return tensors"
-            except Exception as e:
-                tag, note = "ERR", repr(e)
-
-        print(f"layer {idx:02d}: {tag:4s} {note}")
-    print()  # newline
-debug_rotary(backbone)        # immediately after from_pretrained
-
-# (A) Plain load
-fp_backbone = AutoModelForCausalLM.from_pretrained(BACKBONE_ID, torch_dtype=torch.bfloat16, token=hf_token)
-count_missing_rotary("fp16 load", fp_backbone)   # expect 0
-debug_rotary(fp_backbone)        # immediately after from_pretrained
-
-del fp_backbone    # free VRAM
-torch.cuda.empty_cache()
-
-# (B) 8-bit load
-bnb_config = BitsAndBytesConfig(load_in_8bit=True, bnb_8bit_compute_dtype=torch.bfloat16)
-bnb_backbone = AutoModelForCausalLM.from_pretrained(BACKBONE_ID, quantization_config=bnb_config, token=hf_token)
-count_missing_rotary("8-bit load", bnb_backbone)
-debug_rotary(bnb_backbone)        # immediately after from_pretrained
-
-backbone.gradient_checkpointing_enable()
-print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
-attach_bnb_keep(backbone)      # ← add this line
-# This is needed to keep GemmaRotaryEmbedding modules in the model
-def check_bnb_keep(model):
-    """
-    Check if the bnb_keep buffer is present in GemmaRotaryEmbedding modules.
-    """
-    missing = []
-    for idx, mod in enumerate(model.modules()):
-        if isinstance(mod, GemmaRotaryEmbedding):
-            if not hasattr(mod, "bnb_keep"):
-                missing.append(idx)
-    if torch.distributed.get_rank() == 0:   # only rank-0 prints
-        if missing:
-            print(">>> Layers missing bnb_keep:")
-            for idx in missing:
-                print(f"    layer {idx}")
-        else:
-            print(">>> All GemmaRotaryEmbedding layers have bnb_keep")
-check_bnb_keep(backbone)
-# Check if the GemmaRotaryEmbedding modules have bnb_keep
-debug_rotary(backbone)        # immediately after from_pretrained
 
 model = GemmaModular(backbone)
-debug_rotary(model)        # immediately after from_pretrained
-
-check_rotary(model)
-inspect_rotary(model)
-attn0 = model.backbone_layers[0].self_attn
-# seq_len  = 4
-# pos_ids  = torch.arange(seq_len, device=attn0.q_proj.weight.device)
-# print("rotary call returns:", attn0.rotary_emb(seq_len, pos_ids))
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
     quantization_config=quant_config,
@@ -261,11 +100,10 @@ model.config = AutoConfig.from_pretrained(
     output_hidden_states=True,
     token=hf_token,
     )
-check_rotary(model)
+
 print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
 model.to(accelerator.device)
-check_rotary(model)
-inspect_rotary(model)
+
 # model = accelerator.prepare(model)
 # Use 8-bit Adam for trainable parameters
 trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -276,12 +114,6 @@ print(f"[Rank {rank}] optimizer built on {accelerator.device}")
 # Use this if you are initializing your own optimizer – due to funky 8bit stuff I am leaving it to SFTTrainer
 
 print(f"[Rank {rank}] model & optimizer ready on {accelerator.device}")
-
-
-## Uncomment these lines to check loading for Deepspeed
-# for d in range(torch.cuda.device_count()):
-#             print(f"--- Device {d} ---")
-#             print(torch.cuda.memory_summary(f"cuda:{d}"))
 
 # Uncomment these lines to check loading for DDP
 local_rank = accelerator.local_process_index  # 0, 1, 2, or 3

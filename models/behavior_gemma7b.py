@@ -283,8 +283,8 @@ class GemmaModular(nn.Module):
         # frozen until split
         # build RoPE tuple for this sequence
         seq_len = h_back.size(1)
-        position_ids = torch.arange(seq_len, device=h_back.device)
-        cos, sin = self.rotary_emb(h_back, position_ids)     # (seq_len, head_dim)
+        position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
+        cos, sin = self.rotary_emb(h_back, position_ids)
         for layer in self.backbone_layers[:self.split]:
             h_back, _ = layer(
                 h_back,
