@@ -137,11 +137,11 @@ class HybridAttention(nn.Module):
         v_c     = torch.cat([v_cross[:, :i0], v_cross[:, i1:]], dim=1)
 
         if self.rotary is not None:
-            seq_len = q_self.size(-2)
-            pos_emb = self.rotary(seq_len, q_self.dtype, q_self.device)  # returns (seq_len, 1, head_dim*2)
-            q_self, k_s   = apply_rotary_pos_emb(q_self,  k_s,  pos_emb, None)
-            q_cross, k_c  = apply_rotary_pos_emb(q_cross, k_c, pos_emb, None)
-
+            position_ids = None                     # keep default slice
+            cos, sin = self.rotary(q_self, position_ids)     # ✅ pass tensor
+            q_self,  k_s = apply_rotary_pos_emb(q_self,  k_s, cos, sin, position_ids)
+            q_cross, k_c = apply_rotary_pos_emb(q_cross, k_c, cos, sin, position_ids)
+            
         def attn_block(qh, kh, vh):
             w = (qh @ kh.transpose(-2, -1)) * self.scale
             if mask is not None: w = w + mask
