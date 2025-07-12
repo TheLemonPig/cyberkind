@@ -7,7 +7,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.wandb
-wandb/
+wandb/*
 wandb/latest-run.ipynb_checkpoints/
 eval_ds/
 train_ds/
