@@ -208,9 +208,9 @@ class ModuleBlock(nn.Module):
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
-        self.w_fb   = nn.Linear(module_hidden, backbone_hidden, bias=False)
+        self.w_fb   = nn.Linear(module_hidden, backbone_hidden, bias=False, dtype=DTYPE).to(DTYPE)
         nn.init.zeros_(self.w_fb.weight)
-        self.gate_fb = nn.Parameter(torch.zeros(1))   # trainable scalar
+        self.gate_fb = nn.Parameter(torch.zeros(1, dtype=DTYPE))   # trainable scalar
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
         # feedback signal to next backbone layer (scalar‑gated)
@@ -266,7 +266,7 @@ class GemmaModular(nn.Module):
 
             hidden_curr = bl_copy.self_attn.q_proj.out_features
             mod_block = ModuleBlock(bl_copy, in_dim=prev_hidden)  # map prev → current
-            mod_block.to(device)
+            mod_block.to(device, dtype=DTYPE)
             self.mod_layers.append(mod_block)
 
             prev_hidden = hidden_curr  # next block's "in_dim"
