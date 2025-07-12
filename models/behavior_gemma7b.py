@@ -222,17 +222,27 @@ class ModuleBlock(nn.Module):
         return x_mod, delta
 
 # ---------------------------------------------------------------------------
-def _ensure_rotary(model: nn.Module, cfg):
+def _ensure_rotary(model: nn.Module):
     """
-    Bits‑and‑Bytes 8‑bit loading strips sub‑modules that carry no tensors,
-    which removes GemmaRotaryEmbedding from each GemmaAttention.
-    Re‑attach a fresh rotary module on the correct device when missing.
+    After deepcopy + quantisation some GemmaAttention blocks lose their
+    rotary_emb module. Clone the first intact rotary into any missing slots,
+    preserving its internal behaviour (wrapper decorators, cached buffers).
     """
+    # find a reference rotary that came from HF loader (fully functional)
+    ref_rotary = None
     for bl in model.backbone_layers:
-        attn = bl.self_attn
-        if getattr(attn, "rotary_emb", None) is None:
-            attn.rotary_emb = GemmaRotaryEmbedding(cfg)      # pass config
-            attn.rotary_emb.to(next(attn.parameters()).device)
+        re = getattr(bl.self_attn, "rotary_emb", None)
+        if re is not None:
+            ref_rotary = re
+            break
+    if ref_rotary is None:
+        raise RuntimeError("No reference GemmaRotaryEmbedding found in backbone.")
+
+    for bl in model.backbone_layers:
+        if getattr(bl.self_attn, "rotary_emb", None) is None:
+            cloned = copy.deepcopy(ref_rotary)
+            cloned.to(next(bl.parameters()).device)
+            bl.self_attn.rotary_emb = cloned
 
 # ---------------------------------------------------------------------------
 class GemmaModular(nn.Module):
@@ -272,7 +282,7 @@ class GemmaModular(nn.Module):
         self.lm_head = copy.deepcopy(base.lm_head)
 
         # Ensure every frozen backbone block still has a rotary embedding
-        _ensure_rotary(self, self.config)
+        _ensure_rotary(self)
 
     def forward(
         self,
