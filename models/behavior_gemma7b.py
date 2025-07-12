@@ -264,14 +264,12 @@ class GemmaModular(nn.Module):
         **kwargs
     ):
         B, T = input_ids.shape
-        # position ids needed for Gemma rotary embeddings
-        position_ids = torch.arange(T, device=input_ids.device).unsqueeze(0).expand(B, -1)
         h_back = self.embed(input_ids)
         if self.pos is not None:
             h_back = h_back + self.pos(torch.arange(T, device=h_back.device))[None, :]
         # frozen until split
         for layer in self.backbone_layers[:self.split]:
-            h_back, _ = layer(h_back, attention_mask=attention_mask, position_ids=position_ids, output_attentions=False)
+            h_back, _ = layer(h_back, attention_mask=attention_mask, output_attentions=False)
         # module initial state
         h_mod = h_back.clone()
         feedback = torch.zeros_like(h_back)
@@ -282,7 +280,6 @@ class GemmaModular(nn.Module):
             h_back = back_layer(
                 h_back + feedback,
                 attention_mask=attention_mask,
-                position_ids=position_ids,
                 output_attentions=False
             )[0]
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)
