@@ -177,7 +177,7 @@ class GatedHighway(nn.Module):
 # ---------------------------------------------------------------------------
 class ModuleBlock(nn.Module):
     """Module block: cross-attn + driver + FFN + feedback highway."""
-    def __init__(self, src_block: nn.Module):
+    def __init__(self, src_block: nn.Module, in_dim: int):
         super().__init__()
         # retain original self-attn for cloning
         orig_attn = src_block.self_attn
@@ -202,9 +202,9 @@ class ModuleBlock(nn.Module):
         # highways
         self.driver = GatedHighway(hidden)
 
-        # Use the model's hidden size directly to avoid mismatches
-        module_hidden   = hidden  # dimension of x_mod
-        backbone_hidden = hidden  # dimension of h_back
+        # dimensions
+        module_hidden   = in_dim                    # dim of x_mod coming *into* this block
+        backbone_hidden = hidden                    # dim expected by the current backbone layer
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
@@ -254,23 +254,21 @@ class GemmaModular(nn.Module):
         # -------------------------------------------------------------------
         # build module
 
-        # self.mod_layers = nn.ModuleList([
-        #     ModuleBlock(copy.deepcopy(bl)) for bl in self.backbone_layers[split:]
-        # ])
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
         self.mod_layers = nn.ModuleList()
+        prev_hidden = self.backbone_layers[self.split - 1].self_attn.q_proj.out_features
         for bl in self.backbone_layers[self.split:]:
-            # remember which GPU this layer lived on
             device = next(bl.parameters()).device
-            # temporarily move the layer to CPU then deep-copy it there
             bl_cpu = bl.to('cpu')
             bl_copy = copy.deepcopy(bl_cpu)
-            # move the original layer back to its device
             bl.to(device)
-            # initialize our ModuleBlock from the CPU copy, then send it to the right GPU
-            mod_block = ModuleBlock(bl_copy)
+
+            hidden_curr = bl_copy.self_attn.q_proj.out_features
+            mod_block = ModuleBlock(bl_copy, in_dim=prev_hidden)  # map prev → current
             mod_block.to(device)
             self.mod_layers.append(mod_block)
+
+            prev_hidden = hidden_curr  # next block's "in_dim"
 
         self.ln_f = copy.deepcopy(base.model.norm)
         self.lm_head = copy.deepcopy(base.lm_head)
