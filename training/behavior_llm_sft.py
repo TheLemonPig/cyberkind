@@ -201,7 +201,7 @@ model = GemmaModular(backbone)
 check_rotary(model)
 inspect_rotary(model)
 attn0 = model.backbone_layers[0].self_attn
-print("rotary call returns:", attn0.rotary_emb(4, torch.float32, attn0.q_proj.weight.device))
+print("rotary call returns:", attn0.rotary_emb(4))
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
     quantization_config=quant_config,
