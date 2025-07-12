@@ -248,10 +248,10 @@ class GemmaModular(nn.Module):
             bl_cpu = bl.to('cpu')
             bl_copy = copy.deepcopy(bl_cpu)
             # move the original layer back to its device
-            # bl.to(device)
+            bl.to(device)
             # initialize our ModuleBlock from the CPU copy, then send it to the right GPU
             mod_block = ModuleBlock(bl_copy)
-            # mod_block.to(device)
+            mod_block.to(device)
             self.mod_layers.append(mod_block)
         self.ln_f = copy.deepcopy(base.model.norm)
         self.lm_head = copy.deepcopy(base.lm_head)
