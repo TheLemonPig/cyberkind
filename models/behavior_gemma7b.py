@@ -296,7 +296,7 @@ class GemmaModular(nn.Module):
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False,
-            )
+            )[0]
         # module initial state
         h_mod = h_back.clone()
         feedback = torch.zeros_like(h_back)
@@ -309,7 +309,7 @@ class GemmaModular(nn.Module):
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False
-            )
+            )[0]
             # give the tuple to this block’s HybridAttention
             mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)

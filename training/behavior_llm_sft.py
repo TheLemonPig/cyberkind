@@ -121,6 +121,17 @@ print(f"Rank {local_rank} → Device {device}")
 print(torch.cuda.memory_summary(device))
 
 
+# ------------- sanity pass ---------------------------------
+
+dummy = tokenizer("quick test", return_tensors="pt").to(next(model.parameters()).device)
+
+model.eval()
+with torch.no_grad():
+    out = model(**dummy)
+print("[sanity] logits shape:", out["logits"].shape)   # expect (1, T, vocab)
+model.train()
+# -----------------------------------------------------------
+
 # -----------------------------
 
 # 3.  Load datasets
