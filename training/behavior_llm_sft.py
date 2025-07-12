@@ -183,10 +183,46 @@ def count_missing_rotary(msg, model):
         if getattr(bl.self_attn, "rotary_emb", None) is None
     )
     print(f"{msg:<15}  missing={miss}")
+def debug_rotary(model, n_tokens: int = 4):
+    """
+    Prints one line per layer summarising rotary-embedding health.
+    • OK   – attribute exists and call returns (cos, sin) same dtype/shape.
+    • MISS – attribute missing.
+    • ERR  – attribute exists but call raises or returns unexpected.
+
+    Args:
+        model: a Gemma backbone or GemmaModular instance.
+        n_tokens: how many positions to test (small to save memory).
+    """
+    print("\n[rotary debug]")
+    for idx, block in enumerate(model.backbone_layers):
+        attn = block.self_attn
+        tag  = "OK"
+        note = ""
+        if not hasattr(attn, "rotary_emb"):
+            tag, note = "MISS", "attribute missing"
+        else:
+            try:
+                # build a tiny dummy hidden_states tensor on the layer’s device
+                device = next(attn.parameters()).device
+                hidden = torch.zeros(1, n_tokens, 1, attn.head_dim, device=device,
+                                     dtype=attn.q_proj.weight.dtype)
+                cos, sin = attn.rotary_emb(hidden, None)
+                if not (isinstance(cos, torch.Tensor) and isinstance(sin, torch.Tensor)):
+                    tag, note = "ERR", "call did not return tensors"
+                elif cos.shape != sin.shape:
+                    tag, note = "ERR", f"shape mismatch {cos.shape} vs {sin.shape}"
+            except Exception as e:
+                tag, note = "ERR", repr(e)
+
+        print(f"layer {idx:02d}: {tag:4s} {note}")
+    print()  # newline for readability
+debug_rotary(backbone)        # immediately after from_pretrained
 
 # (A) Plain load
 fp_backbone = AutoModelForCausalLM.from_pretrained(BACKBONE_ID, torch_dtype=torch.bfloat16, token=hf_token)
 count_missing_rotary("fp16 load", fp_backbone)   # expect 0
+debug_rotary(fp_backbone)        # immediately after from_pretrained
 
 del fp_backbone    # free VRAM
 torch.cuda.empty_cache()
@@ -195,6 +231,8 @@ torch.cuda.empty_cache()
 bnb_config = BitsAndBytesConfig(load_in_8bit=True, bnb_8bit_compute_dtype=torch.bfloat16)
 bnb_backbone = AutoModelForCausalLM.from_pretrained(BACKBONE_ID, quantization_config=bnb_config, token=hf_token)
 count_missing_rotary("8-bit load", bnb_backbone)
+debug_rotary(bnb_backbone)        # immediately after from_pretrained
+
 backbone.gradient_checkpointing_enable()
 print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
 attach_bnb_keep(backbone)      # ← add this line
@@ -217,7 +255,11 @@ def check_bnb_keep(model):
             print(">>> All GemmaRotaryEmbedding layers have bnb_keep")
 check_bnb_keep(backbone)
 # Check if the GemmaRotaryEmbedding modules have bnb_keep
+debug_rotary(backbone)        # immediately after from_pretrained
+
 model = GemmaModular(backbone)
+debug_rotary(backbone)        # immediately after from_pretrained
+
 check_rotary(model)
 inspect_rotary(model)
 attn0 = model.backbone_layers[0].self_attn
