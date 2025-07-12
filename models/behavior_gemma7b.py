@@ -222,7 +222,7 @@ class ModuleBlock(nn.Module):
         return x_mod, delta
 
 # ---------------------------------------------------------------------------
-def _ensure_rotary(model: nn.Module):
+def _ensure_rotary(model: nn.Module, cfg):
     """
     Bits‑and‑Bytes 8‑bit loading strips sub‑modules that carry no tensors,
     which removes GemmaRotaryEmbedding from each GemmaAttention.
@@ -231,14 +231,14 @@ def _ensure_rotary(model: nn.Module):
     for bl in model.backbone_layers:
         attn = bl.self_attn
         if getattr(attn, "rotary_emb", None) is None:
-            head_dim = attn.head_dim
-            attn.rotary_emb = GemmaRotaryEmbedding(head_dim)
+            attn.rotary_emb = GemmaRotaryEmbedding(cfg)      # pass config
             attn.rotary_emb.to(next(attn.parameters()).device)
 
 # ---------------------------------------------------------------------------
 class GemmaModular(nn.Module):
     def __init__(self, base: AutoModelForCausalLM):
         super().__init__()
+        self.config = base.config
         N = base.config.num_hidden_layers
         self.split = N * 2 // 3
         # freeze backbone
