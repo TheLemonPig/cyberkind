@@ -282,6 +282,8 @@ class GemmaModular(nn.Module):
         labels: Optional[torch.Tensor] = None,
         **kwargs
     ):
+        if attention_mask is not None and attention_mask.dtype == torch.long:
+            attention_mask = attention_mask.to(dtype=torch.bool)
         B, T = input_ids.shape
         h_back = self.embed(input_ids)
         if self.pos is not None:

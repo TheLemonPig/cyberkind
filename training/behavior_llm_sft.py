@@ -123,8 +123,10 @@ print(torch.cuda.memory_summary(device))
 
 # ------------- sanity pass ---------------------------------
 
-dummy = tokenizer("quick test", return_tensors="pt").to(next(model.parameters()).device)
-
+dummy = tokenizer("quick test", return_tensors="pt")
+dummy["input_ids"]      = dummy["input_ids"].to(model.lm_head.weight.device)
+dummy["attention_mask"] = dummy["attention_mask"].to(dtype=torch.bool,   # ← cast
+                                                     device=model.lm_head.weight.device)
 model.eval()
 with torch.no_grad():
     out = model(**dummy)
