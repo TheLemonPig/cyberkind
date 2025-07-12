@@ -213,6 +213,7 @@ check_rotary(model)
 print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
 model.to(accelerator.device)
 check_rotary(model)
+inspect_rotary(model)
 # model = accelerator.prepare(model)
 # Use 8-bit Adam for trainable parameters
 trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -382,7 +383,7 @@ trainer = SFTTrainer(
     data_collator=default_data_collator,
     optimizers=(optimizer, None),  # use 8-bit Adam
 )
-
+inspect_rotary(model)
 # -----------------------------
 # 5.  Automatic-restart training loop for spot instances
 # -----------------------------
