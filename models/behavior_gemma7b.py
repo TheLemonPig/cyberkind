@@ -274,6 +274,9 @@ class GemmaModular(nn.Module):
             bl_copy = copy.deepcopy(bl_cpu)
             # move the original layer back to its device
             bl.to(device)
+            # keep the original rotary object so wrapper + caches stay intact
+            if getattr(bl.self_attn, "rotary_emb", None) is not None:
+                bl_copy.self_attn.rotary_emb = bl.self_attn.rotary_emb
             # initialize our ModuleBlock from the CPU copy, then send it to the right GPU
             mod_block = ModuleBlock(bl_copy)
             mod_block.to(device)
