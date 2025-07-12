@@ -5,6 +5,7 @@ import torch
 import time
 import torch.distributed as dist
 from datetime import timedelta
+import inspect, types
 
 if dist.is_initialized():
     # 2-minute absolute timeout
@@ -137,10 +138,39 @@ def check_rotary(model):
         else:
             print(">>> All backbone layers have rotary_emb")
 
+def inspect_rotary(model):
+    print("\n[rotary diagnostic]")
+    bad = []
+    for idx, bl in enumerate(model.backbone_layers):
+        attn = bl.self_attn
+        # ① does the attribute exist?
+        has_attr = hasattr(attn, "rotary_emb")
+        obj      = getattr(attn, "rotary_emb", None)
+        # ② correct type?  Gemma’s class name is "GemmaRotaryEmbedding"
+        cls_name = type(obj).__name__ if has_attr else "-"
+        # ③ is it callable and returns (cos,sin)?
+        ok_call  = False
+        if callable(obj):
+            try:
+                out = obj(2, torch.float32, torch.device("cpu"))
+                ok_call = isinstance(out, tuple) and len(out) == 2
+            except Exception:
+                pass
+        if not (has_attr and ok_call):
+            bad.append((idx, cls_name))
+    if bad:
+        print("missing or broken rotary embeddings in layers:")
+        for idx, cls_name in bad:
+            print(f"  layer {idx:<2d}  rotary_emb={cls_name}")
+    else:
+        print("✓ every layer has a working rotary_emb\n")
+
+
 backbone.gradient_checkpointing_enable()
 print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
 model = GemmaModular(backbone)
 check_rotary(model)
+inspect_rotary(model)
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
     quantization_config=quant_config,
