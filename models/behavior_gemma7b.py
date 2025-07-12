@@ -286,7 +286,7 @@ class GemmaModular(nn.Module):
         # ])
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
         self.mod_layers = nn.ModuleList()
-        for bl in self.backbone_layers[self.split:]:
+        for idx, bl in enumerate(self.backbone_layers[self.split:]):
             _count_rotary(f"before copy {self.split+idx}", [bl])
 
             # remember which GPU this layer lived on
