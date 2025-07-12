@@ -253,12 +253,32 @@ class GemmaModular(nn.Module):
         self.split = N * 2 // 3
         # freeze backbone
         self.backbone_layers = base.model.layers
+
+        def _count_rotary(prefix, layers):
+            missing = sum(
+                1 for bl in layers
+                if getattr(bl.self_attn, "rotary_emb", None) is None
+            )
+            rank = (
+                torch.distributed.get_rank()
+                if torch.distributed.is_available() and torch.distributed.is_initialized()
+                else 0
+            )
+            if rank == 0:                                     # print only on rank-0
+                print(f"[dbg] {prefix:<12}  missing={missing:2d} / {len(layers)}")
+
+        # ----------- diagnostics ------------------------------------------
+        _count_rotary("after load", self.backbone_layers)
+
+
         for p in self.backbone_layers.parameters():
             p.requires_grad = False
         self.embed = base.model.embed_tokens; self.embed.requires_grad_(False)
         self.pos = getattr(base.model, 'embed_positions', None)
         if self.pos is not None:
             self.pos.requires_grad_(False)
+        _count_rotary("after freeze", self.backbone_layers)
+        # -------------------------------------------------------------------
         # build module
 
         # self.mod_layers = nn.ModuleList([
@@ -267,11 +287,15 @@ class GemmaModular(nn.Module):
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
         self.mod_layers = nn.ModuleList()
         for bl in self.backbone_layers[self.split:]:
+            _count_rotary(f"before copy {self.split+idx}", [bl])
+
             # remember which GPU this layer lived on
             device = next(bl.parameters()).device
             # temporarily move the layer to CPU then deep-copy it there
             bl_cpu = bl.to('cpu')
             bl_copy = copy.deepcopy(bl_cpu)
+
+            _count_rotary(f"after dcpy {self.split+idx}", [bl_copy])
             # move the original layer back to its device
             bl.to(device)
             # keep the original rotary object so wrapper + caches stay intact
@@ -281,8 +305,11 @@ class GemmaModular(nn.Module):
             mod_block = ModuleBlock(bl_copy)
             mod_block.to(device)
             self.mod_layers.append(mod_block)
+
+        _count_rotary("post loop", self.backbone_layers)
         self.ln_f = copy.deepcopy(base.model.norm)
         self.lm_head = copy.deepcopy(base.lm_head)
+        _count_rotary("post post loop", self.backbone_layers)
 
         # Ensure every frozen backbone block still has a rotary embedding
         _ensure_rotary(self)
