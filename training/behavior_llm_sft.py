@@ -177,7 +177,24 @@ def attach_bnb_keep(model):
         if isinstance(mod, GemmaRotaryEmbedding):
             if not hasattr(mod, "bnb_keep"):
                 mod.register_buffer("bnb_keep", torch.zeros(1), persistent=False)
+def count_missing_rotary(msg, model):
+    miss = sum(
+        1 for bl in model.model.layers  # 28 Gemma blocks
+        if getattr(bl.self_attn, "rotary_emb", None) is None
+    )
+    print(f"{msg:<15}  missing={miss}")
 
+# (A) Plain load
+fp_backbone = AutoModelForCausalLM.from_pretrained(BACKBONE_ID, torch_dtype=torch.bfloat16, token=hf_token)
+count_missing_rotary("fp16 load", fp_backbone)   # expect 0
+
+del fp_backbone    # free VRAM
+torch.cuda.empty_cache()
+
+# (B) 8-bit load
+bnb_config = BitsAndBytesConfig(load_in_8bit=True, bnb_8bit_compute_dtype=torch.bfloat16)
+bnb_backbone = AutoModelForCausalLM.from_pretrained(BACKBONE_ID, quantization_config=bnb_config, token=hf_token)
+count_missing_rotary("8-bit load", bnb_backbone)
 backbone.gradient_checkpointing_enable()
 print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
 attach_bnb_keep(backbone)      # ← add this line
