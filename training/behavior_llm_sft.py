@@ -26,7 +26,6 @@ from bitsandbytes.optim import Adam8bit
 from dotenv import load_dotenv
 import wandb
 import inspect, textwrap
-print(textwrap.dedent(inspect.getsource(GemmaRotaryEmbedding.forward)))
 
 # -----------------------------
 
@@ -267,7 +266,6 @@ trainer = SFTTrainer(
     data_collator=default_data_collator,
     optimizers=(optimizer, None),  # use 8-bit Adam
 )
-inspect_rotary(model)
 # -----------------------------
 # 5.  Automatic-restart training loop for spot instances
 # -----------------------------
