@@ -242,6 +242,11 @@ class GemmaModular(nn.Module):
             next(self.backbone_layers.parameters()).device
         )
         self.embed = base.model.embed_tokens; self.embed.requires_grad_(False)
+        num_tokens = self.embed.num_embeddings
+        embed_dim = self.embed.embedding_dim
+        self.embed_delta = nn.Embedding(num_tokens, embed_dim)
+        self.delta_gate = nn.Parameter(torch.zeros(1))
+        nn.init.zeros_(self.embed_delta.weight)
         self.pos = getattr(base.model, 'embed_positions', None)
         if self.pos is not None:
             self.pos.requires_grad_(False)
@@ -286,7 +291,7 @@ class GemmaModular(nn.Module):
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
         cos, sin = self.rotary_emb(h_back, position_ids)
         for layer in self.backbone_layers[:self.split]:
-            h_back, _ = layer(
+            h_back = layer(
                 h_back,
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
@@ -304,10 +309,12 @@ class GemmaModular(nn.Module):
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False
-            )[0]
-            # ✱C — give the tuple to this block’s HybridAttention
+            )
+            # give the tuple to this block’s HybridAttention
             mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)
+            # add tanh-gated delta embedding
+            h_mod = h_mod + torch.tanh(self.delta_gate) * self.embed_delta(input_ids)
         logits = self.lm_head(self.ln_f(h_mod))
 
         # When SFTTrainer passes labels, compute causal‑LM loss
