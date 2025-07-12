@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.models.gemma.modeling_gemma import apply_rotary_pos_emb
+from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
 BASE_MODEL_ID = "google/gemma-7b"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -221,6 +222,20 @@ class ModuleBlock(nn.Module):
         return x_mod, delta
 
 # ---------------------------------------------------------------------------
+def _ensure_rotary(model: nn.Module):
+    """
+    Bits‑and‑Bytes 8‑bit loading strips sub‑modules that carry no tensors,
+    which removes GemmaRotaryEmbedding from each GemmaAttention.
+    Re‑attach a fresh rotary module on the correct device when missing.
+    """
+    for bl in model.backbone_layers:
+        attn = bl.self_attn
+        if getattr(attn, "rotary_emb", None) is None:
+            head_dim = attn.head_dim
+            attn.rotary_emb = GemmaRotaryEmbedding(head_dim)
+            attn.rotary_emb.to(next(attn.parameters()).device)
+
+# ---------------------------------------------------------------------------
 class GemmaModular(nn.Module):
     def __init__(self, base: AutoModelForCausalLM):
         super().__init__()
@@ -255,6 +270,9 @@ class GemmaModular(nn.Module):
             self.mod_layers.append(mod_block)
         self.ln_f = copy.deepcopy(base.model.norm)
         self.lm_head = copy.deepcopy(base.lm_head)
+
+        # Ensure every frozen backbone block still has a rotary embedding
+        _ensure_rotary(self)
 
     def forward(
         self,
