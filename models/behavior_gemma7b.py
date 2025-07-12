@@ -41,7 +41,7 @@ class CrossAttentionFromSelf(nn.Module):
         self.head_dim = hidden // self.num_heads
         self.scale = self.head_dim ** -0.5
         # optional rotary embeddings
-        self.rotary = copy.deepcopy(getattr(self_attn, 'rotary_emb', None))
+        # self.rotary = 
         # dropout
         drop = getattr(self_attn, 'dropout', None)
         self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
@@ -59,6 +59,8 @@ class CrossAttentionFromSelf(nn.Module):
         # rotary if present
         if self.rotary is not None:
             q, k = self.rotary(q, k)
+        else:
+            assert "rotary is missing"
         # scaled dot-product
         attn = (q @ k.transpose(-2, -1)) * self.scale
         if mask is not None:
@@ -109,7 +111,7 @@ class HybridAttention(nn.Module):
         self.k_cross = copy.deepcopy(orig_attn.k_proj)
         self.v_cross = copy.deepcopy(orig_attn.v_proj)
         # Rotary + dropout
-        self.rotary  = copy.deepcopy(getattr(orig_attn, 'rotary_emb', None))
+        # self.rotary  = 
         drop = getattr(orig_attn, 'dropout', None)
         self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
         self.scale = self.head_dim ** -0.5
@@ -141,6 +143,8 @@ class HybridAttention(nn.Module):
             cos, sin = self.rotary(q_self, position_ids)     # ✅ pass tensor
             q_self,  k_s = apply_rotary_pos_emb(q_self,  k_s, cos, sin, position_ids)
             q_cross, k_c = apply_rotary_pos_emb(q_cross, k_c, cos, sin, position_ids)
+        else:
+            assert "rotary is missing"
             
         def attn_block(qh, kh, vh):
             w = (qh @ kh.transpose(-2, -1)) * self.scale
@@ -222,29 +226,6 @@ class ModuleBlock(nn.Module):
         return x_mod, delta
 
 # ---------------------------------------------------------------------------
-def _ensure_rotary(model: nn.Module):
-    """
-    After deepcopy + quantisation some GemmaAttention blocks lose their
-    rotary_emb module. Clone the first intact rotary into any missing slots,
-    preserving its internal behaviour (wrapper decorators, cached buffers).
-    """
-    # find a reference rotary that came from HF loader (fully functional)
-    ref_rotary = None
-    for bl in model.backbone_layers:
-        re = getattr(bl.self_attn, "rotary_emb", None)
-        if re is not None:
-            ref_rotary = re
-            break
-    if ref_rotary is None:
-        raise RuntimeError("No reference GemmaRotaryEmbedding found in backbone.")
-
-    for bl in model.backbone_layers:
-        if getattr(bl.self_attn, "rotary_emb", None) is None:
-            cloned = copy.deepcopy(ref_rotary)
-            cloned.to(next(bl.parameters()).device)
-            bl.self_attn.rotary_emb = cloned
-
-# ---------------------------------------------------------------------------
 class GemmaModular(nn.Module):
     def __init__(self, base: AutoModelForCausalLM):
         super().__init__()
@@ -254,30 +235,16 @@ class GemmaModular(nn.Module):
         # freeze backbone
         self.backbone_layers = base.model.layers
 
-        def _count_rotary(prefix, layers):
-            missing = sum(
-                1 for bl in layers
-                if getattr(bl.self_attn, "rotary_emb", None) is None
-            )
-            rank = (
-                torch.distributed.get_rank()
-                if torch.distributed.is_available() and torch.distributed.is_initialized()
-                else 0
-            )
-            if rank == 0:                                     # print only on rank-0
-                print(f"[dbg] {prefix:<12}  missing={missing:2d} / {len(layers)}")
-
-        # ----------- diagnostics ------------------------------------------
-        _count_rotary("after load", self.backbone_layers)
-
-
         for p in self.backbone_layers.parameters():
             p.requires_grad = False
+        # ✱A — one shared RoPE helper (lives on the same GPU as the first layer)
+        self.rotary_emb = GemmaRotaryEmbedding(self.config).to(
+            next(self.backbone_layers.parameters()).device
+        )
         self.embed = base.model.embed_tokens; self.embed.requires_grad_(False)
         self.pos = getattr(base.model, 'embed_positions', None)
         if self.pos is not None:
             self.pos.requires_grad_(False)
-        _count_rotary("after freeze", self.backbone_layers)
         # -------------------------------------------------------------------
         # build module
 
@@ -286,33 +253,21 @@ class GemmaModular(nn.Module):
         # ])
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
         self.mod_layers = nn.ModuleList()
-        for idx, bl in enumerate(self.backbone_layers[self.split:]):
-            _count_rotary(f"before copy {self.split+idx}", [bl])
-
+        for bl in self.backbone_layers[self.split:]:
             # remember which GPU this layer lived on
             device = next(bl.parameters()).device
             # temporarily move the layer to CPU then deep-copy it there
             bl_cpu = bl.to('cpu')
             bl_copy = copy.deepcopy(bl_cpu)
-
-            _count_rotary(f"after dcpy {self.split+idx}", [bl_copy])
             # move the original layer back to its device
             bl.to(device)
-            # keep the original rotary object so wrapper + caches stay intact
-            if getattr(bl.self_attn, "rotary_emb", None) is not None:
-                bl_copy.self_attn.rotary_emb = bl.self_attn.rotary_emb
             # initialize our ModuleBlock from the CPU copy, then send it to the right GPU
             mod_block = ModuleBlock(bl_copy)
             mod_block.to(device)
             self.mod_layers.append(mod_block)
 
-        _count_rotary("post loop", self.backbone_layers)
         self.ln_f = copy.deepcopy(base.model.norm)
         self.lm_head = copy.deepcopy(base.lm_head)
-        _count_rotary("post post loop", self.backbone_layers)
-
-        # Ensure every frozen backbone block still has a rotary embedding
-        _ensure_rotary(self)
 
     def forward(
         self,
@@ -326,12 +281,17 @@ class GemmaModular(nn.Module):
         if self.pos is not None:
             h_back = h_back + self.pos(torch.arange(T, device=h_back.device))[None, :]
         # frozen until split
-       #  assert all(bl.self_attn.rotary_emb is not None for bl in self.backbone_layers[self.split:]), \
-       # "rotary_emb is None on at least one frozen backbone block"
-       #  print(f"[rank {torch.distributed.get_rank()}] Layer {self.split} device:",
-       #        next(layer.parameters()).device)
+        # build RoPE tuple for this sequence
+        seq_len = h_back.size(1)
+        position_ids = torch.arange(seq_len, device=h_back.device)
+        cos, sin = self.rotary_emb(h_back, position_ids)     # (seq_len, head_dim)
         for layer in self.backbone_layers[:self.split]:
-            h_back, _ = layer(h_back, attention_mask=attention_mask, output_attentions=False)
+            h_back, _ = layer(
+                h_back,
+                position_embeddings=(cos, sin),             # ← NEW
+                attention_mask=attention_mask,
+                output_attentions=False,
+            )
         # module initial state
         h_mod = h_back.clone()
         feedback = torch.zeros_like(h_back)
@@ -341,9 +301,12 @@ class GemmaModular(nn.Module):
         ):
             h_back = back_layer(
                 h_back + feedback,
+                position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False
             )[0]
+            # ✱C — give the tuple to this block’s HybridAttention
+            mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)
         logits = self.lm_head(self.ln_f(h_mod))
 
