@@ -4,13 +4,36 @@
 For reasons I cannot discern you will need to run all of the below to get it to work
 
 ```
-pip install -r requirements
-pip install transformers, trl, dotenv
+pip install -r requirements.txt
+pip install transformers
+pip install trl
+pip install dotenv
+pip install -U bitsandbytes
 rm -rf /workspace/gemma/cyberkind/wandb
 pip install wandb
 ```
 
 You will also need to setup accelerate config. (Passing the file doesn't seem to work)
+
+Answer the questions as visible here:
+
+```
+---------------------------------------------------------------------------------------------------------------------------------------------------In which compute environment are you running?
+This machine                                                                                                                                       
+---------------------------------------------------------------------------------------------------------------------------------------------------Which type of machine are you using?                                                                                                               
+multi-GPU                                                                                                                                          
+How many different machines will you use (use more than 1 for multi-node training)? [1]: 1                                                         
+Should distributed operations be checked while running for errors? This can avoid timeout issues but will be slower. [yes/NO]: yes                 
+Do you wish to optimize your script with torch dynamo?[yes/NO]:NO                                                                                  
+Do you want to use DeepSpeed? [yes/NO]: NO                                                                                                         
+Do you want to use FullyShardedDataParallel? [yes/NO]: NO                                                                                          
+Do you want to use Megatron-LM ? [yes/NO]: NO                                                                                                      
+How many GPU(s) should be used for distributed training? [1]:4                                                                                     
+What GPU(s) (by id) should be used for training on this machine as a comma-separated list? [all]:                                                  
+Would you like to enable numa efficiency? (Currently only supported on NVIDIA hardware). [yes/NO]: yes                                             
+---------------------------------------------------------------------------------------------------------------------------------------------------Do you wish to use mixed precision?
+no  
+```
 
 Run training with the following if your GPU is large enough (~48GB VRAM).
 
