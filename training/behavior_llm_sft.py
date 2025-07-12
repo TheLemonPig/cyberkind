@@ -30,7 +30,7 @@ print(f"\n[PID {os.getpid()} | LOCAL_RANK={local_rank}] starting up", flush=True
 time.sleep(0.1)
 
 import torch.nn as nn
-from transformers import AutoTokenizer, AutoModelForCausalLM, default_data_collator
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, default_data_collator
 from transformers import EarlyStoppingCallback, BitsAndBytesConfig, TrainingArguments
 from dataclasses import dataclass
 from models.behavior_gemma7b import GemmaModular
@@ -122,11 +122,36 @@ else:
         output_hidden_states=True,
         token=hf_token,
     )
+def check_rotary(model):
+    missing = []
+    for idx, bl in enumerate(model.backbone_layers):
+        attn = bl.self_attn
+        dev  = next(attn.parameters()).device
+        if getattr(attn, "rotary_emb", None) is None:
+            missing.append((idx, str(dev)))
+    if torch.distributed.get_rank() == 0:   # only rank-0 prints
+        if missing:
+            print(">>> Layers missing rotary_emb:")
+            for idx, dev in missing:
+                print(f"    layer {idx} on {dev}")
+        else:
+            print(">>> All backbone layers have rotary_emb")
+
 backbone.gradient_checkpointing_enable()
 print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
 model = GemmaModular(backbone)
+check_rotary(model)
+model.config = AutoConfig.from_pretrained(
+    BACKBONE_ID,
+    quantization_config=quant_config,
+    # device_map=accelerator.device, #'auto',   # Uncomment this unless you are using DDP
+    output_hidden_states=True,
+    token=hf_token,
+    )
+check_rotary(model)
 print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
 model.to(accelerator.device)
+check_rotary(model)
 # model = accelerator.prepare(model)
 # Use 8-bit Adam for trainable parameters
 trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -238,32 +263,32 @@ if include_test:
     print("step loss:", loss.item())
 
 # Define SFT training configuration
-sft_config = SFTConfig(
-    per_device_train_batch_size=6,               # adjust as needed for your hardware
-    gradient_accumulation_steps=1,     # adjust to simulate larger batches if needed
-    learning_rate=learning_rate,                # match your optimizer setting
-    num_train_epochs=3,                # set number of epochs
-    logging_steps=50,                  # log every N steps
-    save_strategy="steps",             # checkpoint by steps
-    save_steps=100,                    # every 100 steps
-    save_total_limit=1,                # keep only the most recent
-    report_to="wandb",                 # enable reporting to Weights & Biases
-    gradient_checkpointing=True,
-    lr_scheduler_type="cosine",    # or "linear", "polynomial", etc.
-    warmup_ratio=0.1,              # warm up for 10% of total training steps
-    max_grad_norm=1.0,            # gradient clipping
-    eval_accumulation_steps=2,  # accumulate eval results for better metrics
-    output_dir=os.path.join(project_root, "sft_output"),  # where to save checkpoints
-    optim="adamw_bnb_8bit",
-)
+# sft_config = SFTConfig(
+#     per_device_train_batch_size=6,               # adjust as needed for your hardware
+#     gradient_accumulation_steps=1,     # adjust to simulate larger batches if needed
+#     learning_rate=learning_rate,                # match your optimizer setting
+#     num_train_epochs=3,                # set number of epochs
+#     logging_steps=50,                  # log every N steps
+#     save_strategy="steps",             # checkpoint by steps
+#     save_steps=100,                    # every 100 steps
+#     save_total_limit=1,                # keep only the most recent
+#     report_to="wandb",                 # enable reporting to Weights & Biases
+#     gradient_checkpointing=True,
+#     lr_scheduler_type="cosine",    # or "linear", "polynomial", etc.
+#     warmup_ratio=0.1,              # warm up for 10% of total training steps
+#     max_grad_norm=1.0,            # gradient clipping
+#     eval_accumulation_steps=2,  # accumulate eval results for better metrics
+#     output_dir=os.path.join(project_root, "sft_output"),  # where to save checkpoints
+#     optim="adamw_bnb_8bit",
+# )
 
 training_args = TrainingArguments(
-    output_dir="sft_output",
     per_device_train_batch_size=6,
     per_device_eval_batch_size=6,
-    eval_steps=500,
+    eval_strategy="steps",
+    eval_steps=250,
     save_strategy="steps",
-    save_steps=100,
+    save_steps=250,
     logging_steps=50,
     num_train_epochs=3,
     gradient_accumulation_steps=1,
@@ -271,33 +296,31 @@ training_args = TrainingArguments(
     lr_scheduler_type="cosine",
     warmup_ratio=0.1,
     max_grad_norm=1.0,
-    report_to="wandb"
+    report_to="wandb",
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
+    output_dir=os.path.join(project_root, "sft_output"),  # where to save checkpoints
 )
 
 
 
 total = sum(p.numel() for p in trainable_params)
 print(f"Optimizing {total/1e6:.1f}M params")
-print("Using batch size:", sft_config.train_batch_size)
+print("Using batch size:", training_args.per_device_train_batch_size)
 
 
 # Initialize the SFT trainer with train and eval datasets
 trainer = SFTTrainer(
     model=model,
-    tokenizer=tokenizer,
-    config=sft_config,
+    processing_class=tokenizer,
     args=training_args,
     train_dataset=processed_train,
     eval_dataset=processed_eval,
     callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
-    load_best_model_at_end=True,
-    metric_for_best_model="eval_loss",
-    greater_is_better=False,
     data_collator=default_data_collator,
     optimizers=(optimizer, None),  # use 8-bit Adam
 )
-
-print("Using batch size:", sft_config.train_batch_size)
 
 # -----------------------------
 # 5.  Automatic-restart training loop for spot instances
@@ -311,21 +334,26 @@ attempt = 0
 while True:
     try:
         # find last checkpoint if any
-        print("Using batch size:", sft_config.train_batch_size)
-        last_ckpts = sorted(glob.glob(os.path.join(sft_config.output_dir, "checkpoint-*")), key=os.path.getmtime)
-        print("Using batch size:", sft_config.train_batch_size)
+        print("Using batch size:", training_args.per_device_train_batch_size)
+        last_ckpts = sorted(glob.glob(os.path.join(training_args.output_dir, "checkpoint-*")), key=os.path.getmtime)
+        print("Using batch size:", training_args.per_device_train_batch_size)
         resume = last_ckpts[-1] if last_ckpts else None
         trainer.train(resume_from_checkpoint=resume)
         break
     except Exception as e:
         print(f"Interrupted ({e}), restarting from last checkpoint...")
-        cleanup_checkpoints(sft_config.output_dir, keep=1)
+        cleanup_checkpoints(training_args.output_dir, keep=1)
         attempt += 1
         if attempt >= 5:
             raise
 
+
+print("Training complete, shutting down pod.")
+print(f"[Rank {rank}] Training complete on {accelerator.device}")
+time.sleep(120) # wait_for_everyone doesn't work so let's hope that 2 minutes is enough for everyone to finish
+sys.exit(0)
 # Final barrier and pod shutdown
-accelerator.wait_for_everyone()
-if accelerator.is_main_process:
-    print("Training complete, shutting down pod.")
-    sys.exit(0)
+# accelerator.wait_for_everyone()
+# if accelerator.is_main_process:
+#     print("Training complete, shutting down pod.")
+#     sys.exit(0)

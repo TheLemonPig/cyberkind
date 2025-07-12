@@ -268,10 +268,10 @@ class GemmaModular(nn.Module):
         if self.pos is not None:
             h_back = h_back + self.pos(torch.arange(T, device=h_back.device))[None, :]
         # frozen until split
-        assert all(bl.self_attn.rotary_emb is not None for bl in self.backbone_layers[self.split:]), \
-       "rotary_emb is None on at least one frozen backbone block"
-        print(f"[rank {torch.distributed.get_rank()}] Layer {self.split} device:",
-              next(layer.parameters()).device)
+       #  assert all(bl.self_attn.rotary_emb is not None for bl in self.backbone_layers[self.split:]), \
+       # "rotary_emb is None on at least one frozen backbone block"
+       #  print(f"[rank {torch.distributed.get_rank()}] Layer {self.split} device:",
+       #        next(layer.parameters()).device)
         for layer in self.backbone_layers[:self.split]:
             h_back, _ = layer(h_back, attention_mask=attention_mask, output_attentions=False)
         # module initial state
