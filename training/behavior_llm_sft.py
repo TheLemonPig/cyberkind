@@ -7,6 +7,7 @@ import torch.distributed as dist
 from datetime import timedelta
 import inspect, types
 
+
 if dist.is_initialized():
     # 2-minute absolute timeout
     dist.barrier(timeout=timedelta(minutes=1))
@@ -44,6 +45,8 @@ import glob, shutil
 from bitsandbytes.optim import Adam8bit
 from dotenv import load_dotenv
 import wandb
+import inspect, textwrap
+print(textwrap.dedent(inspect.getsource(GemmaRotaryEmbedding.forward)))
 
 # -----------------------------
 
@@ -201,7 +204,9 @@ model = GemmaModular(backbone)
 check_rotary(model)
 inspect_rotary(model)
 attn0 = model.backbone_layers[0].self_attn
-print("rotary call returns:", attn0.rotary_emb(4))
+seq_len  = 4
+pos_ids  = torch.arange(seq_len, device=attn0.q_proj.weight.device)
+print("rotary call returns:", attn0.rotary_emb(seq_len, pos_ids))
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
     quantization_config=quant_config,
