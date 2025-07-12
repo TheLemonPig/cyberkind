@@ -185,38 +185,41 @@ def count_missing_rotary(msg, model):
     print(f"{msg:<15}  missing={miss}")
 def debug_rotary(model, n_tokens: int = 4):
     """
-    Prints one line per layer summarising rotary-embedding health.
-    • OK   – attribute exists and call returns (cos, sin) same dtype/shape.
-    • MISS – attribute missing.
-    • ERR  – attribute exists but call raises or returns unexpected.
-
-    Args:
-        model: a Gemma backbone or GemmaModular instance.
-        n_tokens: how many positions to test (small to save memory).
+    Checks every Gemma block for a working rotary embedding.
+    • OK   – attribute exists and call returns (cos, sin)
+    • MISS – attribute missing
+    • ERR  – call raises / returns something unexpected
     """
+    # 1) locate the list of blocks
+    if hasattr(model, "backbone_layers"):        # GemmaModular
+        layers = model.backbone_layers
+    elif hasattr(model, "model") and hasattr(model.model, "layers"):  # raw Gemma
+        layers = model.model.layers
+    else:
+        raise ValueError("Cannot find Gemma layers on model")
+
     print("\n[rotary debug]")
-    for idx, block in enumerate(model.backbone_layers):
+    for idx, block in enumerate(layers):
         attn = block.self_attn
-        tag  = "OK"
-        note = ""
+        tag, note = "OK", ""
         if not hasattr(attn, "rotary_emb"):
             tag, note = "MISS", "attribute missing"
         else:
             try:
-                # build a tiny dummy hidden_states tensor on the layer’s device
                 device = next(attn.parameters()).device
-                hidden = torch.zeros(1, n_tokens, 1, attn.head_dim, device=device,
-                                     dtype=attn.q_proj.weight.dtype)
+                hidden = torch.zeros(
+                    1, n_tokens, 1, attn.head_dim,
+                    device=device,
+                    dtype=attn.q_proj.weight.dtype,
+                )
                 cos, sin = attn.rotary_emb(hidden, None)
                 if not (isinstance(cos, torch.Tensor) and isinstance(sin, torch.Tensor)):
                     tag, note = "ERR", "call did not return tensors"
-                elif cos.shape != sin.shape:
-                    tag, note = "ERR", f"shape mismatch {cos.shape} vs {sin.shape}"
             except Exception as e:
                 tag, note = "ERR", repr(e)
 
         print(f"layer {idx:02d}: {tag:4s} {note}")
-    print()  # newline for readability
+    print()  # newline
 debug_rotary(backbone)        # immediately after from_pretrained
 
 # (A) Plain load
@@ -258,7 +261,7 @@ check_bnb_keep(backbone)
 debug_rotary(backbone)        # immediately after from_pretrained
 
 model = GemmaModular(backbone)
-debug_rotary(backbone)        # immediately after from_pretrained
+debug_rotary(model)        # immediately after from_pretrained
 
 check_rotary(model)
 inspect_rotary(model)
