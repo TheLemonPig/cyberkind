@@ -3,16 +3,13 @@ import sys
 import os
 import torch
 import time
-import torch.distributed as dist
-from datetime import timedelta
-import inspect, types
 
-# # Resolve project_root = one level up from this script
-# script_dir   = os.path.dirname(os.path.abspath(__file__))
-# project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
+# Resolve project_root = one level up from this script
+script_dir   = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
 
-# # Prepend it so your imports see the entire repo
-# sys.path.insert(0, project_root)
+# Prepend it so your imports see the entire repo
+sys.path.insert(0, project_root)
 
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, default_data_collator
