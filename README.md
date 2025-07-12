@@ -59,3 +59,9 @@ torchvision==0.22.0.dev20250319+cu128
 ```
 
 If in doubt, I would recommend building your own requirements.txt 
+
+If you need to push to git you will need to input these lines first:
+```
+git config --global user.email "lemontartpig@gmail.com"
+git config --global user.name "TheLemonPig"
+```
