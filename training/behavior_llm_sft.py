@@ -33,6 +33,7 @@ time.sleep(0.1)
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, default_data_collator
 from transformers import EarlyStoppingCallback, BitsAndBytesConfig, TrainingArguments
+from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 from dataclasses import dataclass
 from models.behavior_gemma7b import GemmaModular
 from accelerate import Accelerator
@@ -164,10 +165,38 @@ def inspect_rotary(model):
             print(f"  layer {idx:<2d}  rotary_emb={cls_name}")
     else:
         print("✓ every layer has a working rotary_emb\n")
-
+def attach_bnb_keep(model):
+    """
+    Register a 1-byte buffer on every GemmaRotaryEmbedding so BnB’s
+    replacement pass keeps the module, even after deepcopy().
+    """
+    for mod in model.modules():
+        if isinstance(mod, GemmaRotaryEmbedding):
+            if not hasattr(mod, "bnb_keep"):
+                mod.register_buffer("bnb_keep", torch.zeros(1), persistent=False)
 
 backbone.gradient_checkpointing_enable()
 print(f"[Rank {rank}] gradient checkpoint ready on {accelerator.device}")
+attach_bnb_keep(backbone)      # ← add this line
+# This is needed to keep GemmaRotaryEmbedding modules in the model
+def check_bnb_keep(model):
+    """
+    Check if the bnb_keep buffer is present in GemmaRotaryEmbedding modules.
+    """
+    missing = []
+    for idx, mod in enumerate(model.modules()):
+        if isinstance(mod, GemmaRotaryEmbedding):
+            if not hasattr(mod, "bnb_keep"):
+                missing.append(idx)
+    if torch.distributed.get_rank() == 0:   # only rank-0 prints
+        if missing:
+            print(">>> Layers missing bnb_keep:")
+            for idx in missing:
+                print(f"    layer {idx}")
+        else:
+            print(">>> All GemmaRotaryEmbedding layers have bnb_keep")
+check_bnb_keep(backbone)
+# Check if the GemmaRotaryEmbedding modules have bnb_keep
 model = GemmaModular(backbone)
 check_rotary(model)
 inspect_rotary(model)
