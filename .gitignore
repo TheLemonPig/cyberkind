@@ -6,16 +6,10 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.wandb
-wandb/*
-wandb/latest-run.ipynb_checkpoints/
 eval_ds/
 train_ds/
 models/.ipynb_checkpoints/
 training/.ipynb_checkpoints/
 utils/.ipynb_checkpoints/
 .ipynb_checkpoints/*
-wandb/*
-wandb/latest-run
-wandb/latest-run
-wandb
+/wandb/
