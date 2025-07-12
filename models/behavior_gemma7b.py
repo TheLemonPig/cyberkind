@@ -202,9 +202,9 @@ class ModuleBlock(nn.Module):
         # highways
         self.driver = GatedHighway(hidden)
 
-        # dimensions
-        module_hidden   = self.hybrid_attn.n_total * self.hybrid_attn.head_dim  # dim of x_mod  (3072)
-        backbone_hidden = hidden                                               # dim of h_back (3072 or 4096)
+        # Use the model's hidden size directly to avoid mismatches
+        module_hidden   = hidden  # dimension of x_mod
+        backbone_hidden = hidden  # dimension of h_back
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
