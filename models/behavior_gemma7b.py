@@ -256,7 +256,8 @@ class GemmaModular(nn.Module):
 
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
         self.mod_layers = nn.ModuleList()
-        prev_hidden = self.backbone_layers[self.split - 1].self_attn.q_proj.out_features
+        # Use the embedding dimension as the *actual* size of h_mod entering the first ModuleBlock
+        prev_hidden = self.embed.embedding_dim
         for bl in self.backbone_layers[self.split:]:
             device = next(bl.parameters()).device
             bl_cpu = bl.to('cpu')
