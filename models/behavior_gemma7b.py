@@ -183,19 +183,22 @@ class ModuleBlock(nn.Module):
         orig_attn = src_block.self_attn
         # infer hidden dim from projection
         hidden = orig_attn.q_proj.out_features
-        # copy block and disable its self-attn
-        # self.block = copy.deepcopy(src_block)
-        # src_block has already been deep-copied on the CPU,
-        # so just take it as-is and disable its self-attn
+        # dimensions
+        module_hidden   = self.hybrid_attn.n_total * self.hybrid_attn.head_dim  # dim of x_mod  (3072)
+        backbone_hidden = hidden                                               # dim of h_back (3072 or 4096)
+
+        # feedback projection maps module → backbone
+        self.w_fb = nn.Linear(module_hidden, backbone_hidden, bias=False)
         self.block = src_block
         self.block.self_attn = nn.Identity()
-        # hybrid: 8 self heads + 8 cross heads
+        
         # robust head count retrieval
         total_heads = (
             getattr(orig_attn, "num_heads", None)
             or getattr(orig_attn, "n_heads", None)
             or 16  # Gemma default
         )
+        # hybrid: 8 self heads + 8 cross heads
         n_self = total_heads // 2
 
         # hybrid attention: first n_self heads = self, rest = cross
@@ -207,7 +210,7 @@ class ModuleBlock(nn.Module):
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
-        self.w_fb   = nn.Linear(hidden, hidden, bias=False)
+        self.w_fb   = nn.Linear(module_hidden, backbone_hidden, bias=False)
         nn.init.zeros_(self.w_fb.weight)
         self.gate_fb = nn.Parameter(torch.zeros(1))   # trainable scalar
 
