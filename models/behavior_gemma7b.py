@@ -183,12 +183,7 @@ class ModuleBlock(nn.Module):
         orig_attn = src_block.self_attn
         # infer hidden dim from projection
         hidden = orig_attn.q_proj.out_features
-        # dimensions
-        module_hidden   = self.hybrid_attn.n_total * self.hybrid_attn.head_dim  # dim of x_mod  (3072)
-        backbone_hidden = hidden                                               # dim of h_back (3072 or 4096)
 
-        # feedback projection maps module → backbone
-        self.w_fb = nn.Linear(module_hidden, backbone_hidden, bias=False)
         self.block = src_block
         self.block.self_attn = nn.Identity()
         
@@ -207,6 +202,9 @@ class ModuleBlock(nn.Module):
         # highways
         self.driver = GatedHighway(hidden)
 
+        # dimensions
+        module_hidden   = self.hybrid_attn.n_total * self.hybrid_attn.head_dim  # dim of x_mod  (3072)
+        backbone_hidden = hidden                                               # dim of h_back (3072 or 4096)
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
