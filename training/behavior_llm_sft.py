@@ -7,29 +7,12 @@ import torch.distributed as dist
 from datetime import timedelta
 import inspect, types
 
+# # Resolve project_root = one level up from this script
+# script_dir   = os.path.dirname(os.path.abspath(__file__))
+# project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
 
-if dist.is_initialized():
-    # 2-minute absolute timeout
-    dist.barrier(timeout=timedelta(minutes=1))
-
-# maximum context length (tokens) to prevent overflow during tokenization
-context_length = 1024
-
-# Resolve project_root = one level up from this script
-script_dir   = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
-
-# Prepend it so your imports see the entire repo
-sys.path.insert(0, project_root)
-
-# local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("OMPI_COMM_WORLD_LOCAL_RANK", 0)))
-# torch.cuda.set_device(local_rank)
-local_rank = int(os.environ.get("LOCAL_RANK", 0))
-print(f"\n[PID {os.getpid()} | LOCAL_RANK={local_rank}] starting up", flush=True)
-
-
-# Give us a moment so that the prints don't all interleave
-time.sleep(0.1)
+# # Prepend it so your imports see the entire repo
+# sys.path.insert(0, project_root)
 
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, default_data_collator
@@ -55,6 +38,7 @@ hf_token = os.getenv("HF_API_KEY", None)
 load_in_8bit = True
 include_test = False
 learning_rate = 2e-4
+context_length = 1024
 
 accelerator = Accelerator(log_with="wandb")
 accelerator.init_trackers(
@@ -117,6 +101,10 @@ if load_in_8bit:
     output_hidden_states=True,
     token=hf_token,
     )
+    from transformers.models.gemma.modeling_gemma import GemmaAttention
+    print(textwrap.dedent(
+    inspect.getsource(GemmaAttention.forward)
+    ).splitlines()[0:20])
     print(f"[Rank {rank}/{world_size}] 📦 done loading model", flush=True)
     print(f"[Rank {rank}] finished loading backbone")
 else:
