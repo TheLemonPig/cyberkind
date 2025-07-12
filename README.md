@@ -41,6 +41,14 @@ Run training with the following if your GPU is large enough (~48GB VRAM).
 accelerate launch --config_file accelerate_config.yaml training/behavior_llm_sft.py
 ```
 
+or
+
+```
+accelerate launch training/behavior_llm_sft.py
+```
+
+considering the yaml isn't working.
+
 If your GPU is not big enough but you have multiple GPUs, then uncomment line 69 in `behavior_llm_sft.py` and run the file as you normally would. This will shard the model.
 
 ##Additional troubleshooting
