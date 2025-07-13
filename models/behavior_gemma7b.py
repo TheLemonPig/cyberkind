@@ -226,12 +226,13 @@ class ModuleBlock(nn.Module):
         the path degenerates to standard residual + attention.
         """
         # 1️⃣ Attention in original (possibly 3072‑d) space
-        attn_out = self.hybrid_attn(x_mod, x_back, mask)   # outputs 4096‑d
+        attn_out = self.hybrid_attn(x_mod, x_back, mask)   # outputs 3072‑ or 4096‑d
 
-        # 2️⃣ Up‑project residual stream *once*
-        x_res = self.up_proj(x_mod)                        # 3072→4096 for block‑0
+        # 2️⃣ Up‑project both paths if needed
+        x_res   = self.up_proj(x_mod)          # 3072→4096 for block‑0
+        attn_out = self.up_proj(attn_out)      # ensure attn_out matches dim
 
-        # 3️⃣ Post‑attention RMSNorm (always sees 4096)
+        # 3️⃣ Post‑attention RMSNorm (now always 4096)
         attn_out = self.cross_ln(attn_out)
 
         # Driver on backbone (already 4096)
