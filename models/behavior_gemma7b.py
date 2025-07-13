@@ -199,8 +199,8 @@ class ModuleBlock(nn.Module):
         orig_attn = src_block.self_attn
         # infer hidden dim from projection
         hidden = orig_attn.o_proj.out_features   # 3072 for Gemma-7B
-        print(f"[DBG Init] q_proj weight {orig_attn.q_proj.weight.shape}  hidden={hidden}")
-        print(f"[DBG Init] block hidden={hidden}")
+        # print(f"[DBG Init] q_proj weight {orig_attn.q_proj.weight.shape}  hidden={hidden}")
+        # print(f"[DBG Init] block hidden={hidden}")
 
         self.block = src_block
         self.block.self_attn = IdentitySelfAttn()
@@ -353,7 +353,7 @@ class GemmaModular(nn.Module):
             mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)
             # add tanh-gated delta embedding
-            print(h_mod.shape, self.embed_delta(input_ids).shape, self.delta_gate.shape)
+            print(h_mod, self.embed_delta(input_ids), self.delta_gate)
             h_mod = h_mod + torch.tanh(self.delta_gate) * self.embed_delta(input_ids)
         logits = self.lm_head(self.ln_f(h_mod))
 
