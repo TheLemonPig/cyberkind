@@ -147,8 +147,12 @@ class HybridAttention(nn.Module):
             assert "rotary is missing"
             
         def attn_block(qh, kh, vh):
-            w = (qh.to(torch.float16) @ kh.to(torch.float16).transpose(-2, -1)) * self.scale
-            if mask is not None: w = w + mask
+            qh = qh.to(torch.float16)
+            kh = kh.to(torch.float16)
+            vh = vh.to(torch.float16)
+            w = (qh @ kh.transpose(-2, -1)) * self.scale  # FP16 matmul
+            if mask is not None:
+                w = w + mask
             w = self.dropout(torch.softmax(w, dim=-1))
             out = w @ vh
             return out
@@ -281,8 +285,8 @@ class GemmaModular(nn.Module):
         )
         self.embed = base.model.embed_tokens; self.embed.requires_grad_(False)
         num_tokens = self.embed.num_embeddings
-        self.embed_delta = nn.Embedding(num_tokens, hidden_dim)
-        self.delta_gate = nn.Parameter(torch.zeros(1))
+        self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.float16).to(torch.float16)
+        self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.float16))
         nn.init.zeros_(self.embed_delta.weight)
         self.pos = getattr(base.model, 'embed_positions', None)
         if self.pos is not None:
