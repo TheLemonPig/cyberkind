@@ -147,14 +147,14 @@ class HybridAttention(nn.Module):
             assert "rotary is missing"
             
         def attn_block(qh, kh, vh):
-            qh = qh.to(torch.float16)
-            kh = kh.to(torch.float16)
-            vh = vh.to(torch.float16)
-            w = (qh @ kh.transpose(-2, -1)) * self.scale  # FP16 matmul
+            # qh, kh, vh are already FP16 on GPU
+            w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1))  # FP32 matmul
+            w = w * self.scale
             if mask is not None:
                 w = w + mask
-            w = self.dropout(torch.softmax(w, dim=-1))
-            out = w @ vh
+            w = torch.softmax(w, dim=-1).to(torch.float16)                       # down-cast AFTER softmax
+            w = self.dropout(w)
+            out = w @ vh                                                         # FP16 × FP16 OK
             return out
 
         out_self  = attn_block(q_self,  k_s, v_s)

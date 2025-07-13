@@ -241,8 +241,8 @@ if include_test:
 # )
 
 training_args = TrainingArguments(
-    per_device_train_batch_size=6,
-    per_device_eval_batch_size=6,
+    per_device_train_batch_size=1,
+    per_device_eval_batch_size=1,
     eval_strategy="steps",
     eval_steps=250,
     save_strategy="steps",
