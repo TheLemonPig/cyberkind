@@ -158,6 +158,7 @@ class HybridAttention(nn.Module):
         out = torch.cat([out_self, out_cross], dim=1)              # (B,H,T,d)
         out_flat = out.transpose(1, 2).reshape(B, -1, self.n_total * self.head_dim)
         out_final = 0.5 * (self.o_proj_self(out_flat) + self.o_proj_cross(out_flat))
+        print("[DBG Hybrid] out_flat", out_flat.shape, "→ out_final", out_final.shape)
         return out_final
 
 # ---------------------------------------------------------------------------
@@ -185,6 +186,8 @@ class ModuleBlock(nn.Module):
         orig_attn = src_block.self_attn
         # infer hidden dim from projection
         hidden = orig_attn.q_proj.out_features
+        hidden = orig_attn.q_proj.out_features
+        print(f"[DBG Init] q_proj weight {orig_attn.q_proj.weight.shape}  hidden={hidden}")
         print(f"[DBG Init] block hidden={hidden}")
 
         self.block = src_block
