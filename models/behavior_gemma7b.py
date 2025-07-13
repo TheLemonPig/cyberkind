@@ -186,11 +186,7 @@ class IdentitySelfAttn(nn.Module):
     def forward(
         self,
         hidden_states,
-        attention_mask=None,
-        position_embeddings=None,
-        past_key_value=None,
-        output_attentions=False,
-        use_cache=False,
+        **kwargs
     ):
         return hidden_states, None
 
