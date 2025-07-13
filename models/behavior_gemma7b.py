@@ -201,15 +201,8 @@ class ModuleBlock(nn.Module):
         # hybrid attention: first n_self heads = self, rest = cross
         self.hybrid_attn = HybridAttention(orig_attn, n_self=n_self, mirror=False)
         self.cross_ln = nn.RMSNorm(hidden, eps=1e-5)
-        # dimensions
         # highways
         self.driver = GatedHighway(hidden)
-
-        # optional up‑projection  (3072 ➜ 4096 for Gemma‑7B)
-        if in_dim != hidden:
-            self.up_proj = nn.Linear(in_dim, hidden, bias=False, dtype=torch.float16).to(torch.float16)
-        else:
-            self.up_proj = nn.Identity()
 
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
@@ -220,37 +213,19 @@ class ModuleBlock(nn.Module):
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
         """
-        Flow for the *first* module block (3072‑d input):
-          1.   int8 Q/K/V/O expect 3072‑d → feed raw x_mod.
-          2.   Up‑project the residual path (3072 → 4096).
-          3.   Apply RMSNorm and other residual ops in 4096 space.
-        For later blocks `in_dim == hidden`, so `up_proj` is Identity and
-        the path degenerates to standard residual + attention.
+        Standard block (4096‑d throughout): hybrid attention → driver → FFN → feedback.
         """
-        # --- DEBUG shapes & dtypes ---
-        print(f"[DBG ModuleBlock] x_mod in {x_mod.shape} {x_mod.dtype}; x_back {x_back.shape} {x_back.dtype}")
-        # 1️⃣ Attention in original (possibly 3072‑d) space
-        attn_out = self.hybrid_attn(x_mod, x_back, mask)   # outputs 3072‑ or 4096‑d
-        print(f"[DBG ModuleBlock] attn_out pre‑proj {attn_out.shape} {attn_out.dtype}")
-
-        # 2️⃣ Up‑project both paths if needed
-        x_res   = self.up_proj(x_mod)          # 3072→4096 for block‑0
-        attn_out = self.up_proj(attn_out)      # ensure attn_out matches dim
-        print(f"[DBG ModuleBlock] x_res {x_res.shape} {x_res.dtype}; attn_out post‑proj {attn_out.shape}")
-
-        # 3️⃣ Post‑attention RMSNorm (now always 4096)
+        # Attention (4096‑d everywhere)
+        attn_out = self.hybrid_attn(x_mod, x_back, mask)
         attn_out = self.cross_ln(attn_out)
 
-        # Driver on backbone (project if needed so dim == hidden)
-        x_back_res = self.up_proj(x_back)
-        drv = self.driver(x_back_res)
-        print(f"[DBG ModuleBlock] drv {drv.shape} {drv.dtype}")
+        # Driver (4096‑d)
+        drv = self.driver(x_back)
 
-        # Combine residuals
-        x_comb = x_res + attn_out + drv
-        print(f"[DBG ModuleBlock] x_back_res {x_back_res.shape}; x_comb {x_comb.shape}; w_fb.weight {self.w_fb.weight.shape} {self.w_fb.weight.dtype}")
+        # Residual combine
+        x_comb = x_mod + attn_out + drv
 
-        # Feedback (scalar‑gated), 4096→4096
+        # Feedback (scalar‑gated)
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
 
         # Feed‑forward & norm inside the cloned backbone block
@@ -264,6 +239,7 @@ class GemmaModular(nn.Module):
         self.config = base.config
         N = base.config.num_hidden_layers
         self.split = N * 2 // 3
+        hidden_dim = base.config.hidden_size   # Gemma‑7B = 4096
         # freeze backbone
         self.backbone_layers = base.model.layers
 
@@ -275,8 +251,7 @@ class GemmaModular(nn.Module):
         )
         self.embed = base.model.embed_tokens; self.embed.requires_grad_(False)
         num_tokens = self.embed.num_embeddings
-        embed_dim = self.embed.embedding_dim
-        self.embed_delta = nn.Embedding(num_tokens, embed_dim)
+        self.embed_delta = nn.Embedding(num_tokens, hidden_dim)
         self.delta_gate = nn.Parameter(torch.zeros(1))
         nn.init.zeros_(self.embed_delta.weight)
         self.pos = getattr(base.model, 'embed_positions', None)
@@ -287,8 +262,8 @@ class GemmaModular(nn.Module):
 
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
         self.mod_layers = nn.ModuleList()
-        # Use the embedding dimension as the *actual* size of h_mod entering the first ModuleBlock
-        prev_hidden = self.embed.embedding_dim
+        # First ModuleBlock now starts at the model hidden size (4096)
+        prev_hidden = hidden_dim
         for bl in self.backbone_layers[self.split:]:
             device = next(bl.parameters()).device
             bl_cpu = bl.to('cpu')
