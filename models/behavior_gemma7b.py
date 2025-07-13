@@ -158,7 +158,7 @@ class HybridAttention(nn.Module):
         out = torch.cat([out_self, out_cross], dim=1)              # (B,H,T,d)
         out_flat = out.transpose(1, 2).reshape(B, -1, self.n_total * self.head_dim)
         out_final = 0.5 * (self.o_proj_self(out_flat) + self.o_proj_cross(out_flat))
-        print("[DBG Hybrid] out_flat", out_flat.shape, "→ out_final", out_final.shape)
+        # print("[DBG Hybrid] out_flat", out_flat.shape, "→ out_final", out_final.shape)
         return out_final
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ class ModuleBlock(nn.Module):
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
 
         # Feed‑forward & norm inside the cloned backbone block
-        x_mod, _ = self.block(x_comb, attention_mask=mask, output_attentions=False)
+        x_mod = self.block(x_comb, attention_mask=mask, output_attentions=False)
         return x_mod, delta
 
 # ---------------------------------------------------------------------------
@@ -255,8 +255,8 @@ class GemmaModular(nn.Module):
         N = base.config.num_hidden_layers
         self.split = N * 2 // 3
         hidden_dim = base.config.hidden_size   # Gemma‑7B = 4096
-        for i, layer in enumerate(base.model.layers):
-            print(i, getattr(layer.self_attn.q_proj, "out_features", None))
+        # for i, layer in enumerate(base.model.layers):
+        #     print(i, getattr(layer.self_attn.q_proj, "out_features", None))
         # Ensure we start cloning at the first layer whose *weight* rows equal hidden_dim.
         first_4096 = None
         for i, layer in enumerate(base.model.layers):
@@ -266,7 +266,7 @@ class GemmaModular(nn.Module):
                 break
         if first_4096 is None:        # fallback: assume every layer is already hidden_dim
             first_4096 = 0
-        print(f'first_4096 layer: {first_4096}, split before clamp: {self.split}')
+        # print(f'first_4096 layer: {first_4096}, split before clamp: {self.split}')
         if self.split < first_4096:    # clamp split forward if needed
             self.split = first_4096
         print(f'split final: {self.split}')
