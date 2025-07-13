@@ -172,7 +172,9 @@ class GatedHighway(nn.Module):
         nn.init.zeros_(self.g.weight); nn.init.zeros_(self.g.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.sigmoid(self.g(x)) * self.w(x)
+        out = torch.sigmoid(self.g(x)) * self.w(x)
+        print(f"[DBG GatedHighway] x {x.shape} {x.dtype}; w.weight {self.w.weight.shape}")
+        return out
 
 # ---------------------------------------------------------------------------
 class ModuleBlock(nn.Module):
@@ -225,12 +227,16 @@ class ModuleBlock(nn.Module):
         For later blocks `in_dim == hidden`, so `up_proj` is Identity and
         the path degenerates to standard residual + attention.
         """
+        # --- DEBUG shapes & dtypes ---
+        print(f"[DBG ModuleBlock] x_mod in {x_mod.shape} {x_mod.dtype}; x_back {x_back.shape} {x_back.dtype}")
         # 1️⃣ Attention in original (possibly 3072‑d) space
         attn_out = self.hybrid_attn(x_mod, x_back, mask)   # outputs 3072‑ or 4096‑d
+        print(f"[DBG ModuleBlock] attn_out pre‑proj {attn_out.shape} {attn_out.dtype}")
 
         # 2️⃣ Up‑project both paths if needed
         x_res   = self.up_proj(x_mod)          # 3072→4096 for block‑0
         attn_out = self.up_proj(attn_out)      # ensure attn_out matches dim
+        print(f"[DBG ModuleBlock] x_res {x_res.shape} {x_res.dtype}; attn_out post‑proj {attn_out.shape}")
 
         # 3️⃣ Post‑attention RMSNorm (now always 4096)
         attn_out = self.cross_ln(attn_out)
@@ -240,6 +246,7 @@ class ModuleBlock(nn.Module):
 
         # Combine residuals
         x_comb = x_res + attn_out + drv
+        print(f"[DBG ModuleBlock] x_comb {x_comb.shape}; w_fb.weight {self.w_fb.weight.shape} {self.w_fb.weight.dtype}")
 
         # Feedback (scalar‑gated), 4096→4096
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
