@@ -217,23 +217,34 @@ class ModuleBlock(nn.Module):
         self.gate_fb = nn.Parameter(torch.zeros(1, dtype=DTYPE))   # trainable scalar
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
-        # (optional) project 3072 ➜ 4096 so shapes match backbone
-        x_proj = self.up_proj(x_mod.to(torch.bfloat16))                     # (B,T,backbone_hidden)
+        """
+        Flow for the *first* module block (3072‑d input):
+          1.   int8 Q/K/V/O expect 3072‑d → feed raw x_mod.
+          2.   Up‑project the residual path (3072 → 4096).
+          3.   Apply RMSNorm and other residual ops in 4096 space.
+        For later blocks `in_dim == hidden`, so `up_proj` is Identity and
+        the path degenerates to standard residual + attention.
+        """
+        # 1️⃣ Attention in original (possibly 3072‑d) space
+        attn_out = self.hybrid_attn(x_mod, x_back, mask)   # outputs 4096‑d
 
-        # feedback (scalar‑gated)
-        delta = torch.tanh(self.gate_fb) * self.w_fb(x_proj)
+        # 2️⃣ Up‑project residual stream *once*
+        x_res = self.up_proj(x_mod)                        # 3072→4096 for block‑0
 
-        # modulator: hybrid attention (half self, half cross)
-        kv = x_back  # detach if hard isolation needed: x_back.detach()
-        mod = self.hybrid_attn(self.cross_ln(x_proj), kv, mask)
+        # 3️⃣ Post‑attention RMSNorm (always sees 4096)
+        attn_out = self.cross_ln(attn_out)
 
-        # driver
+        # Driver on backbone (already 4096)
         drv = self.driver(x_back)
 
-        # combine
-        x_mod = x_proj + mod + drv
-        # feed-forward + norm
-        x_mod, _ = self.block(x_mod, attention_mask=mask, output_attentions=False)
+        # Combine residuals
+        x_comb = x_res + attn_out + drv
+
+        # Feedback (scalar‑gated), 4096→4096
+        delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
+
+        # Feed‑forward & norm inside the cloned backbone block
+        x_mod, _ = self.block(x_comb, attention_mask=mask, output_attentions=False)
         return x_mod, delta
 
 # ---------------------------------------------------------------------------
