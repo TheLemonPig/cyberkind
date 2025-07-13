@@ -205,16 +205,16 @@ class ModuleBlock(nn.Module):
 
         # optional up‑projection  (3072 ➜ 4096 for Gemma‑7B)
         if in_dim != hidden:
-            self.up_proj = nn.Linear(in_dim, hidden, bias=False, dtype=DTYPE)
+            self.up_proj = nn.Linear(in_dim, hidden, bias=False, dtype=torch.float16).to(torch.float16)
         else:
             self.up_proj = nn.Identity()
 
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
-        self.w_fb = nn.Linear(hidden, hidden, bias=False, dtype=DTYPE)
+        self.w_fb = nn.Linear(hidden, hidden, bias=False, dtype=torch.float16).to(torch.float16)
         nn.init.zeros_(self.w_fb.weight)
-        self.gate_fb = nn.Parameter(torch.zeros(1, dtype=DTYPE))   # trainable scalar
+        self.gate_fb = nn.Parameter(torch.zeros(1, dtype=torch.float16))   # trainable scalar
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
         """
