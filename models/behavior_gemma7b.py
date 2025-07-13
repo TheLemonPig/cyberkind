@@ -264,12 +264,12 @@ class GemmaModular(nn.Module):
             if out_dim == hidden_dim:
                 first_4096 = i
                 break
-        if first_4096 is None:        # fallback: assume every layer is already hidden_dim
-            first_4096 = 0
-        # print(f'first_4096 layer: {first_4096}, split before clamp: {self.split}')
-        if self.split < first_4096:    # clamp split forward if needed
-            self.split = first_4096
-        print(f'split final: {self.split}')
+        # if first_4096 is None:        # fallback: assume every layer is already hidden_dim
+        #     first_4096 = 0
+        # # print(f'first_4096 layer: {first_4096}, split before clamp: {self.split}')
+        # if self.split < first_4096:    # clamp split forward if needed
+        #     self.split = first_4096
+        # print(f'split final: {self.split}')
         # freeze backbone
         self.backbone_layers = base.model.layers
 
@@ -353,6 +353,7 @@ class GemmaModular(nn.Module):
             mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)
             # add tanh-gated delta embedding
+            print(h_mod.shape, self.embed_delta(input_ids).shape, self.delta_gate.shape)
             h_mod = h_mod + torch.tanh(self.delta_gate) * self.embed_delta(input_ids)
         logits = self.lm_head(self.ln_f(h_mod))
 
