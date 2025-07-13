@@ -185,8 +185,7 @@ class ModuleBlock(nn.Module):
         # retain original self-attn for cloning
         orig_attn = src_block.self_attn
         # infer hidden dim from projection
-        hidden = orig_attn.q_proj.out_features
-        hidden = orig_attn.q_proj.out_features
+        hidden = orig_attn.o_proj.out_features   # 3072 for Gemma-7B
         print(f"[DBG Init] q_proj weight {orig_attn.q_proj.weight.shape}  hidden={hidden}")
         print(f"[DBG Init] block hidden={hidden}")
 
