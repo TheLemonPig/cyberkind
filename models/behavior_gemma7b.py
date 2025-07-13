@@ -120,14 +120,14 @@ class HybridAttention(nn.Module):
         return x.view(b, -1, self.n_total, self.head_dim).transpose(1, 2)
 
     def forward(self, x_q, x_kv, mask=None):
-        assert not torch.isnan(k_c).any(), "NaNs already in x_kv"
+        assert not torch.isnan(x_kn).any(), "NaNs already in x_kv"
         B = x_q.size(0)
         q = self._reshape(self.q_proj(x_q), B)                     # (B,H,T,d)
         k_self = self._reshape(self.k_self(x_q), B)
         v_self = self._reshape(self.v_self(x_q), B)
         k_cross = self._reshape(self.k_cross(x_kv), B)
         v_cross = self._reshape(self.v_cross(x_kv), B)
-        assert not torch.isnan(k_c).any(), "NaN caused by creating k_cross"
+        assert not torch.isnan(k_cross).any(), "NaN caused by creating k_cross"
 
         i0 = self.self_index_start
         i1 = i0 + self.n_self
