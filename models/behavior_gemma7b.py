@@ -20,12 +20,12 @@ class CrossAttentionFromSelf(nn.Module):
             src = getattr(self_attn, name)
             # build a fresh Linear with the same dims, on CPU
             layer = nn.Linear(src.in_features, src.out_features, bias=src.bias is not None)
-            # clone the int8-backed weight to CPU, cast into our working dtype, then copy
-            w = src.weight.data.detach().cpu().clone().to(DTYPE)
+            # clone the int8-backed weight to CPU, cast into FP16, then copy
+            w = src.weight.data.detach().cpu().clone().to(torch.float16)
             layer.weight.data.copy_(w)
             # same for bias if present
             if src.bias is not None:
-                b = src.bias.data.detach().cpu().clone().to(DTYPE)
+                b = src.bias.data.detach().cpu().clone().to(torch.float16)
                 layer.bias.data.copy_(b)
             setattr(self, name, layer)
 
@@ -98,18 +98,18 @@ class HybridAttention(nn.Module):
         self.head_dim = hidden // self.n_total
 
         # Clone shared Q projection (was missing)
-        self.q_proj = copy.deepcopy(orig_attn.q_proj)
+        self.q_proj = copy.deepcopy(orig_attn.q_proj).to(torch.float16)
 
         # Clone shared Q and O
         # separate output projections for self‑ vs cross‑heads (identical at t=0)
-        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj)
-        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj)
-        self.o_proj = copy.deepcopy(orig_attn.o_proj)
+        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj).to(torch.float16)
+        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj).to(torch.float16)
+        self.o_proj = copy.deepcopy(orig_attn.o_proj).to(torch.float16)
         # Clone K/V for self and cross separately
-        self.k_self = copy.deepcopy(orig_attn.k_proj)
-        self.v_self = copy.deepcopy(orig_attn.v_proj)
-        self.k_cross = copy.deepcopy(orig_attn.k_proj)
-        self.v_cross = copy.deepcopy(orig_attn.v_proj)
+        self.k_self = copy.deepcopy(orig_attn.k_proj).to(torch.float16)
+        self.v_self = copy.deepcopy(orig_attn.v_proj).to(torch.float16)
+        self.k_cross = copy.deepcopy(orig_attn.k_proj).to(torch.float16)
+        self.v_cross = copy.deepcopy(orig_attn.v_proj).to(torch.float16)
         # Rotary + dropout
         # self.rotary  = 
         drop = getattr(orig_attn, 'dropout', None)
@@ -147,7 +147,7 @@ class HybridAttention(nn.Module):
             assert "rotary is missing"
             
         def attn_block(qh, kh, vh):
-            w = (qh @ kh.transpose(-2, -1)) * self.scale
+            w = (qh.to(torch.float16) @ kh.to(torch.float16).transpose(-2, -1)) * self.scale
             if mask is not None: w = w + mask
             w = self.dropout(torch.softmax(w, dim=-1))
             out = w @ vh
