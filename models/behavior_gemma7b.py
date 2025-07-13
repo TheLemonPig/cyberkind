@@ -120,12 +120,14 @@ class HybridAttention(nn.Module):
         return x.view(b, -1, self.n_total, self.head_dim).transpose(1, 2)
 
     def forward(self, x_q, x_kv, mask=None):
+        assert not torch.isnan(k_c).any(), "NaNs already in x_kv"
         B = x_q.size(0)
         q = self._reshape(self.q_proj(x_q), B)                     # (B,H,T,d)
         k_self = self._reshape(self.k_self(x_q), B)
         v_self = self._reshape(self.v_self(x_q), B)
         k_cross = self._reshape(self.k_cross(x_kv), B)
         v_cross = self._reshape(self.v_cross(x_kv), B)
+        assert not torch.isnan(k_c).any(), "NaN caused by creating k_cross"
 
         i0 = self.self_index_start
         i1 = i0 + self.n_self
@@ -138,6 +140,8 @@ class HybridAttention(nn.Module):
         k_c     = torch.cat([k_cross[:, :i0], k_cross[:, i1:]], dim=1)
         v_c     = torch.cat([v_cross[:, :i0], v_cross[:, i1:]], dim=1)
 
+        assert not torch.isnan(k_c).any(), "NaN caused by cat operation"
+
         if self.rotary is not None:
             position_ids = None                     # keep default slice
             cos, sin = self.rotary(q_self, position_ids)     # ✅ pass tensor
@@ -145,6 +149,7 @@ class HybridAttention(nn.Module):
             q_cross, k_c = apply_rotary_pos_emb(q_cross, k_c, cos, sin, position_ids)
         else:
             assert "rotary is missing"
+        assert not torch.isnan(k_c).any(), "NaN caused by applying rotary embeddings"
             
         def attn_block(qh, kh, vh):
             # qh, kh, vh are already FP16 on GPU
