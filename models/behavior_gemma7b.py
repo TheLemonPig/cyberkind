@@ -148,19 +148,19 @@ class HybridAttention(nn.Module):
             
         def attn_block(qh, kh, vh):
             # qh, kh, vh are already FP16 on GPU
-            assert not torch.isnan(qh).any(),  "NaN in attention weights at 0"
-            assert not torch.isnan(kh).any(),  "NaN in attention weights at 0.5"
+            #assert not torch.isnan(qh).any(),  "NaN in attention weights at 0"
+            #assert not torch.isnan(kh).any(),  "NaN in attention weights at 0.5"
             w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1))  # FP32 matmul
-            assert not torch.isnan(w).any(),  "NaN in attention weights at 1"
+            #assert not torch.isnan(w).any(),  "NaN in attention weights at 1"
             w = w * self.scale
-            assert not torch.isnan(w).any(),  "NaN in attention weights at 2"
+            #assert not torch.isnan(w).any(),  "NaN in attention weights at 2"
             if mask is not None:
                 w = w + mask
-            assert not torch.isnan(w).any(),  "NaN in attention weights at 3"
+            #assert not torch.isnan(w).any(),  "NaN in attention weights at 3"
             w = torch.softmax(w, dim=-1).to(torch.float16)     
-            assert not torch.isnan(w).any(),  "NaN in attention weights at 4"                  # down-cast AFTER softmax
+            #assert not torch.isnan(w).any(),  "NaN in attention weights at 4"                  # down-cast AFTER softmax
             w = self.dropout(w)
-            assert not torch.isnan(w).any(),  "NaN in attention weights at 5"
+            #assert not torch.isnan(w).any(),  "NaN in attention weights at 5"
             out = w @ vh                                                         # FP16 × FP16 OK
             return out
 
