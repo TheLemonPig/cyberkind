@@ -188,7 +188,7 @@ class IdentitySelfAttn(nn.Module):
         hidden_states,
         **kwargs
     ):
-        return hidden_states, None
+        return hidden_states, None  # pass-through, no attention
 
 # ---------------------------------------------------------------------------
 class ModuleBlock(nn.Module):
@@ -244,8 +244,8 @@ class ModuleBlock(nn.Module):
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
 
         # Feed‑forward & norm inside the cloned backbone block
-        x_mod = self.block(x_comb, attention_mask=mask, output_attentions=False)
-        return x_mod[0], delta
+        (x_mod,) = self.block(x_comb, attention_mask=mask, output_attentions=False)
+        return x_mod, delta
 
 # ---------------------------------------------------------------------------
 class GemmaModular(nn.Module):
