@@ -245,7 +245,7 @@ class ModuleBlock(nn.Module):
 
         # Feed‑forward & norm inside the cloned backbone block
         x_mod = self.block(x_comb, attention_mask=mask, output_attentions=False)
-        return x_mod, delta
+        return x_mod[0], delta
 
 # ---------------------------------------------------------------------------
 class GemmaModular(nn.Module):
