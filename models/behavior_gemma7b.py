@@ -241,12 +241,14 @@ class ModuleBlock(nn.Module):
         # 3️⃣ Post‑attention RMSNorm (now always 4096)
         attn_out = self.cross_ln(attn_out)
 
-        # Driver on backbone (already 4096)
-        drv = self.driver(x_back)
+        # Driver on backbone (project if needed so dim == hidden)
+        x_back_res = self.up_proj(x_back)
+        drv = self.driver(x_back_res)
+        print(f"[DBG ModuleBlock] drv {drv.shape} {drv.dtype}")
 
         # Combine residuals
         x_comb = x_res + attn_out + drv
-        print(f"[DBG ModuleBlock] x_comb {x_comb.shape}; w_fb.weight {self.w_fb.weight.shape} {self.w_fb.weight.dtype}")
+        print(f"[DBG ModuleBlock] x_back_res {x_back_res.shape}; x_comb {x_comb.shape}; w_fb.weight {self.w_fb.weight.shape} {self.w_fb.weight.dtype}")
 
         # Feedback (scalar‑gated), 4096→4096
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
