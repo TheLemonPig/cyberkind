@@ -218,10 +218,10 @@ class ModuleBlock(nn.Module):
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
         # (optional) project 3072 ➜ 4096 so shapes match backbone
-        x_proj = self.up_proj(x_mod)                     # (B,T,backbone_hidden)
+        x_proj = self.up_proj(x_mod.to(torch.bfloat16))                     # (B,T,backbone_hidden)
 
         # feedback (scalar‑gated)
-        delta = torch.tanh(self.gate_fb) * self.w_fb(x_proj.to(torch.bfloat16))
+        delta = torch.tanh(self.gate_fb) * self.w_fb(x_proj)
 
         # modulator: hybrid attention (half self, half cross)
         kv = x_back  # detach if hard isolation needed: x_back.detach()
