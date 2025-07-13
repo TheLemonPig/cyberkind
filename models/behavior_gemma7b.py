@@ -185,6 +185,7 @@ class ModuleBlock(nn.Module):
         orig_attn = src_block.self_attn
         # infer hidden dim from projection
         hidden = orig_attn.q_proj.out_features
+        print(f"[DBG Init] block hidden={hidden}")
 
         self.block = src_block
         self.block.self_attn = nn.Identity()
@@ -240,6 +241,15 @@ class GemmaModular(nn.Module):
         N = base.config.num_hidden_layers
         self.split = N * 2 // 3
         hidden_dim = base.config.hidden_size   # Gemma‑7B = 4096
+        # ensure we start cloning at the first layer that already uses `hidden_dim` width
+        first_4096 = next(
+            i for i, layer in enumerate(base.model.layers)
+            if layer.self_attn.q_proj.out_features == hidden_dim
+        )
+        print(f'first_4096 layer: {first_4096}, split: {self.split}')
+        # ensure split is at least the first 4096 layer
+        if self.split < first_4096:
+            self.split = first_4096
         # freeze backbone
         self.backbone_layers = base.model.layers
 
