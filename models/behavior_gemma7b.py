@@ -241,6 +241,8 @@ class GemmaModular(nn.Module):
         N = base.config.num_hidden_layers
         self.split = N * 2 // 3
         hidden_dim = base.config.hidden_size   # Gemma‑7B = 4096
+        for i, layer in enumerate(base.model.layers):
+            print(i, getattr(layer.self_attn.q_proj, "out_features", None))
         # ensure we start cloning at the first layer that already uses `hidden_dim` width
         first_4096 = next(
             i for i, layer in enumerate(base.model.layers)
