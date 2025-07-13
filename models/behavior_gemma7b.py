@@ -130,6 +130,7 @@ class HybridAttention(nn.Module):
         k_cross = self._reshape(self.k_cross(x_kv), B)
         v_cross = self._reshape(self.v_cross(x_kv), B)
         print("any NaN in k_cross.weight? ", torch.isnan(self.k_cross.weight).any())
+        print("any NaN in k_cross? ", torch.isnan(self.k_cross).any())
         assert not torch.isnan(k_cross).any(), "NaN caused by creating k_cross"
 
         i0 = self.self_index_start
