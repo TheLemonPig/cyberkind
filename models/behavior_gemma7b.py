@@ -186,7 +186,7 @@ class ModuleBlock(nn.Module):
 
         self.block = src_block
         self.block.self_attn = nn.Identity()
-        
+
         # robust head count retrieval
         total_heads = (
             getattr(orig_attn, "num_heads", None)
@@ -199,30 +199,39 @@ class ModuleBlock(nn.Module):
         # hybrid attention: first n_self heads = self, rest = cross
         self.hybrid_attn = HybridAttention(orig_attn, n_self=n_self, mirror=False)
         self.cross_ln = nn.RMSNorm(hidden, eps=1e-5)
+        # dimensions
         # highways
         self.driver = GatedHighway(hidden)
 
-        # dimensions
-        module_hidden   = in_dim                    # dim of x_mod coming *into* this block
-        backbone_hidden = hidden                    # dim expected by the current backbone layer
+        # optional up‑projection  (3072 ➜ 4096 for Gemma‑7B)
+        if in_dim != hidden:
+            self.up_proj = nn.Linear(in_dim, hidden, bias=False, dtype=DTYPE)
+        else:
+            self.up_proj = nn.Identity()
+
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
-        self.w_fb   = nn.Linear(module_hidden, backbone_hidden, bias=False, dtype=DTYPE).to(DTYPE)
+        self.w_fb = nn.Linear(hidden, hidden, bias=False, dtype=DTYPE)
         nn.init.zeros_(self.w_fb.weight)
         self.gate_fb = nn.Parameter(torch.zeros(1, dtype=DTYPE))   # trainable scalar
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
-        # feedback signal to next backbone layer (scalar‑gated)
-        print("x_mod dtype:", x_mod.dtype, "w_fb dtype:", self.w_fb.weight.dtype)
-        delta = torch.tanh(self.gate_fb) * self.w_fb(x_mod.to(torch.bfloat16))   # bounded in (–1,+1)
+        # (optional) project 3072 ➜ 4096 so shapes match backbone
+        x_proj = self.up_proj(x_mod)                     # (B,T,backbone_hidden)
+
+        # feedback (scalar‑gated)
+        delta = torch.tanh(self.gate_fb) * self.w_fb(x_proj)
+
         # modulator: hybrid attention (half self, half cross)
         kv = x_back  # detach if hard isolation needed: x_back.detach()
-        mod = self.hybrid_attn(self.cross_ln(x_mod), kv, mask)
+        mod = self.hybrid_attn(self.cross_ln(x_proj), kv, mask)
+
         # driver
         drv = self.driver(x_back)
+
         # combine
-        x_mod = x_mod + mod + drv
+        x_mod = x_proj + mod + drv
         # feed-forward + norm
         x_mod, _ = self.block(x_mod, attention_mask=mask, output_attentions=False)
         return x_mod, delta
