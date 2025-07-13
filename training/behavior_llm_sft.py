@@ -12,7 +12,7 @@ project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
 sys.path.insert(0, project_root)
 
 import torch.nn as nn
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, default_data_collator
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, DataCollatorWithPadding
 from transformers import EarlyStoppingCallback, BitsAndBytesConfig, TrainingArguments
 from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 from dataclasses import dataclass
@@ -268,6 +268,13 @@ print(f"Optimizing {total/1e6:.1f}M params")
 print("Using batch size:", training_args.per_device_train_batch_size)
 
 
+base_collator = DataCollatorWithPadding(tokenizer)
+
+def collate(features):
+    batch = base_collator(features)
+    batch["attention_mask"] = (batch["input_ids"] != tokenizer.pad_token_id)
+    return batch
+
 # Initialize the SFT trainer with train and eval datasets
 trainer = SFTTrainer(
     model=model,
@@ -276,7 +283,7 @@ trainer = SFTTrainer(
     train_dataset=processed_train,
     eval_dataset=processed_eval,
     callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
-    data_collator=default_data_collator,
+    data_collator=collate,
     optimizers=(optimizer, None),  # use 8-bit Adam
 )
 # -----------------------------

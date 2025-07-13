@@ -98,18 +98,18 @@ class HybridAttention(nn.Module):
         self.head_dim = hidden // self.n_total
 
         # Clone shared Q projection (was missing)
-        self.q_proj = copy.deepcopy(orig_attn.q_proj).to(torch.float16)
+        self.q_proj = copy.deepcopy(orig_attn.q_proj).to(torch.float32)
 
         # Clone shared Q and O
         # separate output projections for self‑ vs cross‑heads (identical at t=0)
-        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj).to(torch.float16)
-        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj).to(torch.float16)
-        self.o_proj = copy.deepcopy(orig_attn.o_proj).to(torch.float16)
+        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj).to(torch.float32)
+        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj).to(torch.float32)
+        self.o_proj = copy.deepcopy(orig_attn.o_proj).to(torch.float32)
         # Clone K/V for self and cross separately
-        self.k_self = copy.deepcopy(orig_attn.k_proj).to(torch.float16)
-        self.v_self = copy.deepcopy(orig_attn.v_proj).to(torch.float16)
-        self.k_cross = copy.deepcopy(orig_attn.k_proj).to(torch.float16)
-        self.v_cross = copy.deepcopy(orig_attn.v_proj).to(torch.float16)
+        self.k_self = copy.deepcopy(orig_attn.k_proj).to(torch.float32)
+        self.v_self = copy.deepcopy(orig_attn.v_proj).to(torch.float32)
+        self.k_cross = copy.deepcopy(orig_attn.k_proj).to(torch.float32)
+        self.v_cross = copy.deepcopy(orig_attn.v_proj).to(torch.float32)
         # Rotary + dropout
         # self.rotary  = 
         drop = getattr(orig_attn, 'dropout', None)
@@ -120,15 +120,20 @@ class HybridAttention(nn.Module):
         return x.view(b, -1, self.n_total, self.head_dim).transpose(1, 2)
 
     def forward(self, x_q, x_kv, mask=None):
+        print("||x_q||_inf", x_q.abs().max().item(), "||x_kv||_inf", x_kv.abs().max().item())
         assert not torch.isnan(x_kv).any(), "NaNs already in x_kv"
         assert not torch.isnan(x_q).any(), "NaNs already in x_q"
         B = x_q.size(0)
         assert not torch.isnan(x_q).any(), "NaNs already in B"
         q = self._reshape(self.q_proj(x_q), B)                     # (B,H,T,d)
-        k_self = self._reshape(self.k_self(x_q), B)
-        v_self = self._reshape(self.v_self(x_q), B)
-        k_cross = self._reshape(self.k_cross(x_kv), B)
-        v_cross = self._reshape(self.v_cross(x_kv), B)
+        k_self = self._reshape(self.k_self(x_q.to(torch.float32)).to(torch.float16), B)
+        v_self = self._reshape(self.v_self(x_q.to(torch.float32)).to(torch.float16), B)
+        k_cross = self._reshape(self.k_cross(x_kv.to(torch.float32)).to(torch.float16), B)
+        v_cross = self._reshape(self.v_cross(x_kv.to(torch.float32)).to(torch.float16), B)
+        assert torch.allclose(
+            self.k_self.weight.float(), self.k_cross.weight.float(), atol=0, rtol=0
+        ), "Weights diverged!"
+
         print("any NaN in k_cross.weight? ", torch.isnan(self.k_cross.weight).any())
         print("any NaN in k_cross? ", torch.isnan(self.k_cross).any())
         assert not torch.isnan(k_cross).any(), "NaN caused by creating k_cross"
