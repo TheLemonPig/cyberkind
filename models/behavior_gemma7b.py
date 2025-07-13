@@ -123,6 +123,7 @@ class HybridAttention(nn.Module):
         assert not torch.isnan(x_kv).any(), "NaNs already in x_kv"
         assert not torch.isnan(x_q).any(), "NaNs already in x_q"
         B = x_q.size(0)
+        assert not torch.isnan(x_q).any(), "NaNs already in B"
         q = self._reshape(self.q_proj(x_q), B)                     # (B,H,T,d)
         k_self = self._reshape(self.k_self(x_q), B)
         v_self = self._reshape(self.v_self(x_q), B)
