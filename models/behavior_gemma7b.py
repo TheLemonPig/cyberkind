@@ -249,6 +249,7 @@ class ModuleBlock(nn.Module):
         Standard block (4096‑d throughout): hybrid attention → driver → FFN → feedback.
         """
         # Attention (4096‑d everywhere)
+        assert not torch.isnan(x_back).any(), "NaN already in x_back"
         attn_out = self.hybrid_attn(x_mod, x_back, mask)
         assert not torch.isnan(attn_out).any(), "NaN before cross_ln"
         attn_out = self.cross_ln(attn_out)
@@ -343,12 +344,14 @@ class GemmaModular(nn.Module):
         h_back = self.embed(input_ids)
         if self.pos is not None:
             h_back = h_back + self.pos(torch.arange(T, device=h_back.device))[None, :]
+        assert not torch.isnan(h_back).any(), "NaN already in h_back from very beginning"
         # frozen until split
         # build RoPE tuple for this sequence
         seq_len = h_back.size(1)
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
         cos, sin = self.rotary_emb(h_back, position_ids)
-        for layer in self.backbone_layers[:self.split]:
+        for idx, layer in enumerate(self.backbone_layers[:self.split]):
+            assert not torch.isnan(h_back).any(), f"NaN already in h_back {idx} layers in"
             h_back = layer(
                 h_back,
                 position_embeddings=(cos, sin),             # ← NEW
