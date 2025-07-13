@@ -178,6 +178,23 @@ class GatedHighway(nn.Module):
         return out
 
 # ---------------------------------------------------------------------------
+class IdentitySelfAttn(nn.Module):
+    """
+    Pass-through replacement for Gemma’s SelfAttention.
+    Returns (hidden_states, None) while accepting the usual kwargs.
+    """
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        position_embeddings=None,
+        past_key_value=None,
+        output_attentions=False,
+        use_cache=False,
+    ):
+        return hidden_states, None
+
+# ---------------------------------------------------------------------------
 class ModuleBlock(nn.Module):
     """Module block: cross-attn + driver + FFN + feedback highway."""
     def __init__(self, src_block: nn.Module, in_dim: int):
@@ -190,8 +207,7 @@ class ModuleBlock(nn.Module):
         print(f"[DBG Init] block hidden={hidden}")
 
         self.block = src_block
-        self.block.self_attn = nn.Identity()
-
+        self.block.self_attn = IdentitySelfAttn()
         # robust head count retrieval
         total_heads = (
             getattr(orig_attn, "num_heads", None)
