@@ -212,7 +212,7 @@ class ModuleBlock(nn.Module):
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
-        self.w_fb = nn.Linear(hidden, hidden, bias=False, dtype=DTYPE)
+        self.w_fb = nn.Linear(hidden, hidden, bias=False, dtype=DTYPE).to(dtype=DTYPE)
         nn.init.zeros_(self.w_fb.weight)
         self.gate_fb = nn.Parameter(torch.zeros(1, dtype=DTYPE))   # trainable scalar
 
