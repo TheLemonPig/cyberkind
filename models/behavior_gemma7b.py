@@ -149,16 +149,23 @@ class HybridAttention(nn.Module):
         def attn_block(qh, kh, vh):
             # qh, kh, vh are already FP16 on GPU
             w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1))  # FP32 matmul
+            assert not torch.isnan(w).any(),  "NaN in attention weights at 1"
             w = w * self.scale
+            assert not torch.isnan(w).any(),  "NaN in attention weights at 2"
             if mask is not None:
                 w = w + mask
-            w = torch.softmax(w, dim=-1).to(torch.float16)                       # down-cast AFTER softmax
+            assert not torch.isnan(w).any(),  "NaN in attention weights at 3"
+            w = torch.softmax(w, dim=-1).to(torch.float16)     
+            assert not torch.isnan(w).any(),  "NaN in attention weights at 4"                  # down-cast AFTER softmax
             w = self.dropout(w)
+            assert not torch.isnan(w).any(),  "NaN in attention weights at 5"
             out = w @ vh                                                         # FP16 × FP16 OK
             return out
 
         out_self  = attn_block(q_self,  k_s, v_s)
+        assert not torch.isnan(out_self).any(), "NaN after self attn_block"
         out_cross = attn_block(q_cross, k_c, v_c)
+        assert not torch.isnan(out_cross).any(), "NaN after cross attn_block"
         out = torch.cat([out_self, out_cross], dim=1)              # (B,H,T,d)
         out_flat = out.transpose(1, 2).reshape(B, -1, self.n_total * self.head_dim)
         out_final = 0.5 * (self.o_proj_self(out_flat) + self.o_proj_cross(out_flat))
@@ -236,6 +243,7 @@ class ModuleBlock(nn.Module):
         """
         # Attention (4096‑d everywhere)
         attn_out = self.hybrid_attn(x_mod, x_back, mask)
+        assert not torch.isnan(attn_out).any(), "NaN before cross_ln"
         attn_out = self.cross_ln(attn_out)
 
         # Driver (4096‑d)
