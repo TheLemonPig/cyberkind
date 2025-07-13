@@ -214,6 +214,7 @@ class ModuleBlock(nn.Module):
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
         # feedback signal to next backbone layer (scalar‑gated)
+        print("x_mod dtype:", x_mod.dtype, "w_fb dtype:", self.w_fb.weight.dtype)
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_mod)   # bounded in (–1,+1)
         # modulator: hybrid attention (half self, half cross)
         kv = x_back  # detach if hard isolation needed: x_back.detach()
