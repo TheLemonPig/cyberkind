@@ -287,7 +287,8 @@ class GemmaModular(nn.Module):
 
             hidden_curr = bl_copy.self_attn.q_proj.out_features
             mod_block = ModuleBlock(bl_copy, in_dim=prev_hidden)  # map prev → current
-            mod_block.to(device, dtype=DTYPE)
+            # keep the module in FP16 so its Linear layers match FP16 activations
+            mod_block.to(device, dtype=torch.float16)
             self.mod_layers.append(mod_block)
 
             prev_hidden = hidden_curr  # next block's "in_dim"
