@@ -90,7 +90,17 @@ else:
         output_hidden_states=True,
         token=hf_token,
     )
+def debug_sdpa(module, input, output):
+    q, k, v = output
+    # q, k, v shapes: (B, T, H, d_head) or flattened depending on impl;
+    # we only need dtype
+    print(
+        f"[DBG sdpa] layer={module} "
+        f"q.dtype={q.dtype}, k.dtype={k.dtype}, v.dtype={v.dtype}"
+    )
 
+for layer in backbone.model.layers:
+    layer.self_attn.register_forward_hook(debug_sdpa, prepend=True)  # runs just before SDPA
 model = GemmaModular(backbone)
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
