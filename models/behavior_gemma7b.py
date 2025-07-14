@@ -352,17 +352,16 @@ class GemmaModular(nn.Module):
         # build RoPE tuple for this sequence
         seq_len = h_back.size(1)
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
-        cos, sin = self.rotary_emb(h_back, position_ids)
-        cos_f32, sin_f32 = cos.float(), sin.float()
+        cos, sin = self.rotary_emb(h_back, position_ids)           # BF16 tensors
         for idx, layer in enumerate(self.backbone_layers[:self.split]):
             assert not torch.isinf(h_back).any(), "Infinity already in h_back {idx} layers in"
             assert not torch.isnan(h_back).any(), f"NaN already in h_back {idx} layers in"
             h_back = layer(
                 h_back,
-                position_embeddings=(cos_f32, sin_f32),             # ← NEW
+                position_embeddings=(cos, sin),                    # keep dtype consistent
                 attention_mask=attention_mask,
                 output_attentions=False,
-            )[0].to(torch.bfloat16) 
+            )[0]                                                   # layer already returns BF16
             
         assert not torch.isinf(h_back).any(), "Infinity already in h_back  layers in"
         # module initial state
@@ -381,7 +380,7 @@ class GemmaModular(nn.Module):
             )[0]
             print("‖after  RoPE‖", h_back.abs().max())
             # give the tuple to this block’s HybridAttention
-            mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
+            mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs  # cos/sin already BF16
             assert not torch.isinf(h_back).any(), "Infinity already in h_back"
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)
             # add tanh-gated delta embedding
