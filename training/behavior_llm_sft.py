@@ -99,8 +99,17 @@ def debug_sdpa(module, input, output):
         f"q.dtype={q.dtype}, k.dtype={k.dtype}, v.dtype={v.dtype}"
     )
 
-for layer in backbone.model.layers:
-    layer.self_attn.register_forward_hook(debug_sdpa, prepend=True)  # runs just before SDPA
+def dbg_pre(module, inp):
+    (hidden_states, *_) = inp      # first positional arg is hidden_states
+    print(f"[dbg-pre] layer {id(module)} input dtype {hidden_states.dtype}")
+
+def dbg_post(module, inp, out):
+    hid, attn = out
+    print(f"[dbg-post] layer {id(module)} output dtype {hid.dtype}")
+
+for l in backbone.model.layers[:1]:          # just first layer for signal
+    l.self_attn.register_forward_pre_hook(dbg_pre, prepend=True)
+    l.self_attn.register_forward_hook(dbg_post, prepend=True)
 model = GemmaModular(backbone)
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
