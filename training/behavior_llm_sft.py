@@ -99,7 +99,7 @@ model.config = AutoConfig.from_pretrained(
     output_hidden_states=True,
     token=hf_token,
     )
-for layer in model.model.layers:
+for layer in model.backbone_layers:
     attn = layer.self_attn
     attn.q_proj.register_forward_hook(lambda m, inp, out: out.to(torch.bfloat16))
     attn.k_proj.register_forward_hook(lambda m, inp, out: out.to(torch.bfloat16))
