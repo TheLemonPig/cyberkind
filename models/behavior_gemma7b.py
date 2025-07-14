@@ -258,6 +258,7 @@ class ModuleBlock(nn.Module):
         """
         # Attention (4096‑d everywhere)
         assert not torch.isnan(x_back).any(), "NaN already in x_back"
+        assert not torch.isinf(x_back).any(), "Infinity already in x_back"
         attn_out = self.hybrid_attn(x_mod, x_back, mask)
         assert not torch.isnan(attn_out).any(), "NaN before cross_ln"
         attn_out = self.cross_ln(attn_out)
@@ -381,6 +382,7 @@ class GemmaModular(nn.Module):
             )[0]
             # give the tuple to this block’s HybridAttention
             mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
+            assert not torch.isinf(h_back).any(), "Infinity already in h_back"
             h_mod, feedback = mod_block(h_mod, h_back, attention_mask)
             # add tanh-gated delta embedding
             print(h_mod, self.embed_delta(input_ids), self.delta_gate)
