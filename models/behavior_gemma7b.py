@@ -20,12 +20,12 @@ class CrossAttentionFromSelf(nn.Module):
             src = getattr(self_attn, name)
             # build a fresh Linear with the same dims, on CPU
             layer = nn.Linear(src.in_features, src.out_features, bias=src.bias is not None)
-            # clone the int8-backed weight to CPU, cast into FP16, then copy
-            w = src.weight.data.detach().cpu().clone().to(torch.float16)
+            # clone the int8-backed weight to CPU, cast into BF16, then copy
+            w = src.weight.data.detach().cpu().clone().to(torch.bfloat16)
             layer.weight.data.copy_(w)
             # same for bias if present
             if src.bias is not None:
-                b = src.bias.data.detach().cpu().clone().to(torch.float16)
+                b = src.bias.data.detach().cpu().clone().to(torch.bfloat16)
                 layer.bias.data.copy_(b)
             setattr(self, name, layer)
 
@@ -98,18 +98,18 @@ class HybridAttention(nn.Module):
         self.head_dim = hidden // self.n_total
 
         # Clone shared Q projection (was missing)
-        self.q_proj = copy.deepcopy(orig_attn.q_proj).to(torch.float32)
+        self.q_proj = copy.deepcopy(orig_attn.q_proj).to(torch.bfloat16)
 
         # Clone shared Q and O
         # separate output projections for self‑ vs cross‑heads (identical at t=0)
-        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj).to(torch.float32)
-        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj).to(torch.float32)
-        self.o_proj = copy.deepcopy(orig_attn.o_proj).to(torch.float32)
+        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj).to(torch.bfloat16)
+        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj).to(torch.bfloat16)
+        self.o_proj = copy.deepcopy(orig_attn.o_proj).to(torch.bfloat16)
         # Clone K/V for self and cross separately
-        self.k_self = copy.deepcopy(orig_attn.k_proj).to(torch.float32)
-        self.v_self = copy.deepcopy(orig_attn.v_proj).to(torch.float32)
-        self.k_cross = copy.deepcopy(orig_attn.k_proj).to(torch.float32)
-        self.v_cross = copy.deepcopy(orig_attn.v_proj).to(torch.float32)
+        self.k_self = copy.deepcopy(orig_attn.k_proj).to(torch.bfloat16)
+        self.v_self = copy.deepcopy(orig_attn.v_proj).to(torch.bfloat16)
+        self.k_cross = copy.deepcopy(orig_attn.k_proj).to(torch.bfloat16)
+        self.v_cross = copy.deepcopy(orig_attn.v_proj).to(torch.bfloat16)
         # Rotary + dropout
         # self.rotary  = 
         drop = getattr(orig_attn, 'dropout', None)
@@ -126,10 +126,10 @@ class HybridAttention(nn.Module):
         B = x_q.size(0)
         assert not torch.isnan(x_q).any(), "NaNs already in B"
         q = self._reshape(self.q_proj(x_q), B)                     # (B,H,T,d)
-        k_self = self._reshape(self.k_self(x_q.to(torch.float32)).to(torch.float16), B)
-        v_self = self._reshape(self.v_self(x_q.to(torch.float32)).to(torch.float16), B)
-        k_cross = self._reshape(self.k_cross(x_kv.to(torch.float32)).to(torch.float16), B)
-        v_cross = self._reshape(self.v_cross(x_kv.to(torch.float32)).to(torch.float16), B)
+        k_self = self._reshape(self.k_self(x_q), B)
+        v_self = self._reshape(self.v_self(x_q), B)
+        k_cross = self._reshape(self.k_cross(x_kv), B)
+        v_cross = self._reshape(self.v_cross(x_kv), B)
         assert torch.allclose(
             self.k_self.weight.float(), self.k_cross.weight.float(), atol=0, rtol=0
         ), "Weights diverged!"
@@ -160,21 +160,13 @@ class HybridAttention(nn.Module):
         assert not torch.isnan(k_c).any(), "NaN caused by applying rotary embeddings"
             
         def attn_block(qh, kh, vh):
-            # qh, kh, vh are already FP16 on GPU
-            #assert not torch.isnan(qh).any(),  "NaN in attention weights at 0"
-            #assert not torch.isnan(kh).any(),  "NaN in attention weights at 0.5"
-            w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1))  # FP32 matmul
-            #assert not torch.isnan(w).any(),  "NaN in attention weights at 1"
-            w = w * self.scale
-            #assert not torch.isnan(w).any(),  "NaN in attention weights at 2"
+            # qh, kh, vh are already BF16 on GPU
+            w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1)) * self.scale
             if mask is not None:
                 w = w + mask
-            #assert not torch.isnan(w).any(),  "NaN in attention weights at 3"
-            w = torch.softmax(w, dim=-1).to(torch.float16)     
-            #assert not torch.isnan(w).any(),  "NaN in attention weights at 4"                  # down-cast AFTER softmax
+            w = torch.softmax(w, dim=-1).to(torch.bfloat16)
             w = self.dropout(w)
-            #assert not torch.isnan(w).any(),  "NaN in attention weights at 5"
-            out = w @ vh                                                         # FP16 × FP16 OK
+            out = (w @ vh.to(torch.bfloat16)).to(torch.bfloat16)
             return out
 
         out_self  = attn_block(q_self,  k_s, v_s)
@@ -248,9 +240,9 @@ class ModuleBlock(nn.Module):
         # High‑bandwidth feedback: full‑rank Linear + tanh‑bounded scalar gate.
         #   • weight zero‑init  → delta = 0 at t0
         #   • gate starts at 0  → tanh(0)=0 so path closed
-        self.w_fb = nn.Linear(hidden, hidden, bias=False, dtype=torch.float16).to(torch.float16)
+        self.w_fb = nn.Linear(hidden, hidden, bias=False, dtype=torch.bfloat16)
         nn.init.zeros_(self.w_fb.weight)
-        self.gate_fb = nn.Parameter(torch.zeros(1, dtype=torch.float16))   # trainable scalar
+        self.gate_fb = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))   # trainable scalar
 
     def forward(self, x_mod: torch.Tensor, x_back: torch.Tensor, mask: Optional[torch.Tensor]):
         """
@@ -310,8 +302,8 @@ class GemmaModular(nn.Module):
         )
         self.embed = base.model.embed_tokens; self.embed.requires_grad_(False)
         num_tokens = self.embed.num_embeddings
-        self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.float16).to(torch.float16)
-        self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.float16))
+        self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
+        self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
         nn.init.zeros_(self.embed_delta.weight)
         self.pos = getattr(base.model, 'embed_positions', None)
         if self.pos is not None:
@@ -331,8 +323,8 @@ class GemmaModular(nn.Module):
 
             hidden_curr = bl_copy.self_attn.q_proj.out_features
             mod_block = ModuleBlock(bl_copy, in_dim=prev_hidden)  # map prev → current
-            # keep the module in FP16 so its Linear layers match FP16 activations
-            mod_block.to(device, dtype=torch.float16)
+            # keep the module in BF16 so its Linear layers match BF16 activations
+            mod_block.to(device, dtype=torch.bfloat16)
             self.mod_layers.append(mod_block)
 
             prev_hidden = hidden_curr  # next block's "in_dim"
