@@ -98,6 +98,9 @@ tok = tokenizer("hello", return_tensors="pt").to(m16.device)  # tokenise & move 
 with torch.no_grad():
     out = m16(**tok)
 print("→ bf16 no-quant forward:", out.logits[0, 0, :5])
+with torch.no_grad():
+    out = backbone(**tok)
+print("→ with quant forward:", out.logits[0, 0, :5])
 # --------------------------------------------------------
 model = GemmaModular(backbone)
 model.config = AutoConfig.from_pretrained(
