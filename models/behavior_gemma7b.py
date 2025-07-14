@@ -371,7 +371,7 @@ class GemmaModular(nn.Module):
                 output_attentions=False,
             )[0]
             
-
+        assert not torch.isinf(h_back).any(), "Infinity already in h_back  layers in"
         # module initial state
         h_mod = h_back.clone()
         feedback = torch.zeros_like(h_back)
