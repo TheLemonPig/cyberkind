@@ -91,17 +91,7 @@ else:
         output_hidden_states=True,
         token=hf_token,
     )
-m16 = AutoModelForCausalLM.from_pretrained("google/gemma-7b",
-                                           torch_dtype="bfloat16").cuda()
-# --- quick BF16 sanity‑check (no quant) -----------------
-tok = tokenizer("hello", return_tensors="pt").to(m16.device)  # tokenise & move to GPU
-with torch.no_grad():
-    out = m16(**tok)
-print("→ bf16 no-quant forward:", out.logits[0, 0, :5])
-with torch.no_grad():
-    out = backbone(**tok)
-print("→ with quant forward:", out.logits[0, 0, :5])
-# --------------------------------------------------------
+# -----------------------------
 model = GemmaModular(backbone)
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
