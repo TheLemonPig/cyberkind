@@ -353,15 +353,16 @@ class GemmaModular(nn.Module):
         seq_len = h_back.size(1)
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
         cos, sin = self.rotary_emb(h_back, position_ids)
+        cos_f32, sin_f32 = cos.float(), sin.float()
         for idx, layer in enumerate(self.backbone_layers[:self.split]):
             assert not torch.isinf(h_back).any(), "Infinity already in h_back {idx} layers in"
             assert not torch.isnan(h_back).any(), f"NaN already in h_back {idx} layers in"
             h_back = layer(
                 h_back,
-                position_embeddings=(cos, sin),             # ← NEW
+                position_embeddings=(cos_f32, sin_f32),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False,
-            )[0]
+            )[0].to(torch.bfloat16) 
             
         assert not torch.isinf(h_back).any(), "Infinity already in h_back  layers in"
         # module initial state
