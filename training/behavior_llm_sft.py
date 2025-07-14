@@ -66,9 +66,10 @@ EOS_TOKEN = tokenizer.eos_token
 if load_in_8bit:
     quant_config = BitsAndBytesConfig(
     load_in_8bit=True,
-    bnb_8bit_compute_dtype=torch.bfloat16,
+    # bnb_8bit_compute_dtype=torch.bfloat16,
+    bnb_8bit_compute_dtype=torch.float32,   # <- critical change
     llm_int8_threshold=6.0,            # optional tuning threshold
-    llm_int8_has_fp16_weight=False,    # optional
+    # llm_int8_has_fp16_weight=False,    # optional
     )
     rank = accelerator.local_process_index
     print(f"[Rank {rank}] about to load backbone on GPU {torch.cuda.current_device()}")
@@ -90,22 +91,9 @@ else:
         output_hidden_states=True,
         token=hf_token,
     )
-def dbg_pre(module, args, kwargs):
-    # hidden_states can arrive either positionally or by keyword
-    if args:
-        hidden = args[0]
-    else:
-        hidden = kwargs.get("hidden_states", None)
-    print(f"[dbg-pre] layer {id(module)}  input dtype {hidden.dtype}")
-
-def dbg_post(module, args, kwargs, output):
-    hidden, _ = output          # Gemma self-attn returns (hidden, attn_weights)
-    print(f"[dbg-post] layer {id(module)} output dtype {hidden.dtype}")
-
-# attach to just one backbone layer for signal
-layer0 = backbone.model.layers[0].self_attn
-layer0.register_forward_pre_hook(dbg_pre, prepend=True)
-layer0.register_forward_hook(dbg_post, prepend=True)
+m16 = AutoModelForCausalLM.from_pretrained("google/gemma-7b",
+                                           torch_dtype="bfloat16").cuda()
+print("→ bf16 no-quant forward:", m16("hello", return_dict=True)["logits"][0,0,:5])
 model = GemmaModular(backbone)
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
