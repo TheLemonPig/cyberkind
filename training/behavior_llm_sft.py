@@ -99,7 +99,11 @@ model.config = AutoConfig.from_pretrained(
     output_hidden_states=True,
     token=hf_token,
     )
-
+for layer in model.model.layers:
+    attn = layer.self_attn
+    attn.q_proj.register_forward_hook(lambda m, inp, out: out.to(torch.bfloat16))
+    attn.k_proj.register_forward_hook(lambda m, inp, out: out.to(torch.bfloat16))
+    attn.v_proj.register_forward_hook(lambda m, inp, out: out.to(torch.bfloat16))
 print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
 model.to(accelerator.device)
 
