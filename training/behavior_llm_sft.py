@@ -90,26 +90,22 @@ else:
         output_hidden_states=True,
         token=hf_token,
     )
-def debug_sdpa(module, input, output):
-    q, k, v = output
-    # q, k, v shapes: (B, T, H, d_head) or flattened depending on impl;
-    # we only need dtype
-    print(
-        f"[DBG sdpa] layer={module} "
-        f"q.dtype={q.dtype}, k.dtype={k.dtype}, v.dtype={v.dtype}"
-    )
+def dbg_pre(module, args, kwargs):
+    # hidden_states can arrive either positionally or by keyword
+    if args:
+        hidden = args[0]
+    else:
+        hidden = kwargs.get("hidden_states", None)
+    print(f"[dbg-pre] layer {id(module)}  input dtype {hidden.dtype}")
 
-def dbg_pre(module, inp):
-    (hidden_states, *_) = inp      # first positional arg is hidden_states
-    print(f"[dbg-pre] layer {id(module)} input dtype {hidden_states.dtype}")
+def dbg_post(module, args, kwargs, output):
+    hidden, _ = output          # Gemma self-attn returns (hidden, attn_weights)
+    print(f"[dbg-post] layer {id(module)} output dtype {hidden.dtype}")
 
-def dbg_post(module, inp, out):
-    hid, attn = out
-    print(f"[dbg-post] layer {id(module)} output dtype {hid.dtype}")
-
-for l in backbone.model.layers[:1]:          # just first layer for signal
-    l.self_attn.register_forward_pre_hook(dbg_pre, prepend=True)
-    l.self_attn.register_forward_hook(dbg_post, prepend=True)
+# attach to just one backbone layer for signal
+layer0 = backbone.model.layers[0].self_attn
+layer0.register_forward_pre_hook(dbg_pre, prepend=True)
+layer0.register_forward_hook(dbg_post, prepend=True)
 model = GemmaModular(backbone)
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
