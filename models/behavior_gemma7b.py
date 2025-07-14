@@ -371,12 +371,14 @@ class GemmaModular(nn.Module):
         for back_layer, mod_block in zip(
             self.backbone_layers[self.split:], self.mod_layers
         ):
+            print("‖before RoPE‖", h_back.abs().max())
             h_back = back_layer(
                 h_back + feedback,
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False
             )[0]
+            print("‖after  RoPE‖", h_back.abs().max())
             # give the tuple to this block’s HybridAttention
             mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs
             assert not torch.isinf(h_back).any(), "Infinity already in h_back"
