@@ -276,22 +276,6 @@ class GemmaModular(nn.Module):
         N = base.config.num_hidden_layers
         self.split = N * 2 // 3
         hidden_dim = base.config.hidden_size   # Gemma‑7B = 4096
-        # for i, layer in enumerate(base.model.layers):
-        #     print(i, getattr(layer.self_attn.q_proj, "out_features", None))
-        # Ensure we start cloning at the first layer whose *weight* rows equal hidden_dim.
-        first_4096 = None
-        for i, layer in enumerate(base.model.layers):
-            out_dim = layer.self_attn.q_proj.weight.shape[0]  # robust (works for Int8Linear)
-            if out_dim == hidden_dim:
-                first_4096 = i
-                break
-        # if first_4096 is None:        # fallback: assume every layer is already hidden_dim
-        #     first_4096 = 0
-        # # print(f'first_4096 layer: {first_4096}, split before clamp: {self.split}')
-        # if self.split < first_4096:    # clamp split forward if needed
-        #     self.split = first_4096
-        # print(f'split final: {self.split}')
-        # freeze backbone
         self.backbone_layers = base.model.layers
 
         for p in self.backbone_layers.parameters():
@@ -373,7 +357,7 @@ class GemmaModular(nn.Module):
         ):
             print("‖before RoPE‖", h_back.abs().max())
             h_back = back_layer(
-                h_back + feedback,
+                h_back,
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False
