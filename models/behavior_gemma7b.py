@@ -11,66 +11,66 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16
 
 # ---------------------------------------------------------------------------
-# class CrossAttentionFromSelf(nn.Module):
-#     """Cross-attention reusing an existing self-attention's Q/K/V/O weights."""
-#     def __init__(self, self_attn: nn.Module):
-#         super().__init__()
-#         # Recreate the 4 projection layers from the original, cloning weights on CPU
-#         for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
-#             src = getattr(self_attn, name)
-#             # build a fresh Linear with the same dims, on CPU
-#             layer = nn.Linear(src.in_features, src.out_features, bias=src.bias is not None)
-#             # clone the int8-backed weight to CPU, cast into BF16, then copy
-#             w = src.weight.data.detach().cpu().clone().to(torch.bfloat16)
-#             layer.weight.data.copy_(w)
-#             # same for bias if present
-#             if src.bias is not None:
-#                 b = src.bias.data.detach().cpu().clone().to(torch.bfloat16)
-#                 layer.bias.data.copy_(b)
-#             setattr(self, name, layer)
+class CrossAttentionFromSelf(nn.Module):
+    """Cross-attention reusing an existing self-attention's Q/K/V/O weights."""
+    def __init__(self, self_attn: nn.Module):
+        super().__init__()
+        # Recreate the 4 projection layers from the original, cloning weights on CPU
+        for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
+            src = getattr(self_attn, name)
+            # build a fresh Linear with the same dims, on CPU
+            layer = nn.Linear(src.in_features, src.out_features, bias=src.bias is not None)
+            # clone the int8-backed weight to CPU, cast into BF16, then copy
+            w = src.weight.data.detach().cpu().clone().to(torch.bfloat16)
+            layer.weight.data.copy_(w)
+            # same for bias if present
+            if src.bias is not None:
+                b = src.bias.data.detach().cpu().clone().to(torch.bfloat16)
+                layer.bias.data.copy_(b)
+            setattr(self, name, layer)
 
-#         # infer head count and dimension
-#         hidden = self.q_proj.out_features
-#         num_heads = getattr(self_attn, 'num_heads', None) or getattr(self_attn, 'n_heads', None)
-#         if num_heads and hidden % int(num_heads) == 0:
-#             self.num_heads = int(num_heads)
-#         else:
-#             # fallback to single head
-#             self.num_heads = 16  # I looked it up, Gemma uses 16 heads
-#             print(f"Warning: {self_attn.__class__.__name__} has no num_heads or n_heads, assuming 16 heads.")
-#         self.head_dim = hidden // self.num_heads
-#         self.scale = self.head_dim ** -0.5
-#         # optional rotary embeddings
-#         # self.rotary = 
-#         # dropout
-#         drop = getattr(self_attn, 'dropout', None)
-#         self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
+        # infer head count and dimension
+        hidden = self.q_proj.out_features
+        num_heads = getattr(self_attn, 'num_heads', None) or getattr(self_attn, 'n_heads', None)
+        if num_heads and hidden % int(num_heads) == 0:
+            self.num_heads = int(num_heads)
+        else:
+            # fallback to single head
+            self.num_heads = 16  # I looked it up, Gemma uses 16 heads
+            print(f"Warning: {self_attn.__class__.__name__} has no num_heads or n_heads, assuming 16 heads.")
+        self.head_dim = hidden // self.num_heads
+        self.scale = self.head_dim ** -0.5
+        # optional rotary embeddings
+        # self.rotary = 
+        # dropout
+        drop = getattr(self_attn, 'dropout', None)
+        self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
 
-#     def _reshape(self, x: torch.Tensor, batch: int):
-#         seq = x.size(1)
-#         return x.view(batch, seq, self.num_heads, self.head_dim).transpose(1, 2)
+    def _reshape(self, x: torch.Tensor, batch: int):
+        seq = x.size(1)
+        return x.view(batch, seq, self.num_heads, self.head_dim).transpose(1, 2)
 
-#     def forward(self, query: torch.Tensor, key_value: torch.Tensor, mask: Optional[torch.Tensor] = None):
-#         bsz = query.size(0)
-#         # project and reshape
-#         q = self._reshape(self.q_proj(query), bsz)
-#         k = self._reshape(self.k_proj(key_value), bsz)
-#         v = self._reshape(self.v_proj(key_value), bsz)
-#         # rotary if present
-#         if self.rotary is not None:
-#             q, k = self.rotary(q, k)
-#         else:
-#             assert "rotary is missing"
-#         # scaled dot-product
-#         attn = (q @ k.transpose(-2, -1)) * self.scale
-#         if mask is not None:
-#             attn = attn + mask
-#         attn = torch.softmax(attn, dim=-1)
-#         attn = self.dropout(attn)
-#         # combine heads
-#         out = attn @ v  # (bsz, heads, seq, head_dim)
-#         out = out.transpose(1, 2).reshape(bsz, -1, self.num_heads * self.head_dim)
-#         return self.o_proj(out)
+    def forward(self, query: torch.Tensor, key_value: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        bsz = query.size(0)
+        # project and reshape
+        q = self._reshape(self.q_proj(query), bsz)
+        k = self._reshape(self.k_proj(key_value), bsz)
+        v = self._reshape(self.v_proj(key_value), bsz)
+        # rotary if present
+        if self.rotary is not None:
+            q, k = self.rotary(q, k)
+        else:
+            assert "rotary is missing"
+        # scaled dot-product
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        if mask is not None:
+            attn = attn + mask
+        attn = torch.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
+        # combine heads
+        out = attn @ v  # (bsz, heads, seq, head_dim)
+        out = out.transpose(1, 2).reshape(bsz, -1, self.num_heads * self.head_dim)
+        return self.o_proj(out)
 
 # ---------------------------------------------------------------------------
 class HybridAttention(nn.Module):
