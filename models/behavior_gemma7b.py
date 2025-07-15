@@ -272,7 +272,12 @@ class ModuleBlock(nn.Module):
 
 def log_max(name):
     def _hook(_, __, output):
-        print(f"[{name}] max|x| = {output.abs().max().item():.2f}")
+        # Gemma layers return either a tuple or BaseModelOutputWithPast; grab the tensor
+        if isinstance(output, (tuple, list)):
+            hidden = output[0]
+        else:  # huggingface BaseModelOutput-like
+            hidden = output.hidden_states if hasattr(output, "hidden_states") else output.last_hidden_state
+        print(f"[{name}] max|x| = {hidden.abs().max().item():.2f}")
     return _hook
 
 class GemmaModular(nn.Module):
