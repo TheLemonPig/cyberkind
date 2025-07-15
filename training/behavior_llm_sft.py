@@ -185,15 +185,22 @@ def add_layer18_spy(model):
         x  = ln(h)
 
         print("\n=== L18 SPY ===")
-        print("after layer‑norm   ", x.abs().min().item(), x.abs().max().item())
+        print("after layer‑norm      ", x.abs().min().item(), x.abs().max().item())
 
         for tag, proj in {"q": module.q_proj,
                           "k": module.k_proj,
                           "v": module.v_proj}.items():
             out = proj(x)
-            print(f"{tag}_proj out     ", out.abs().min().item(), out.abs().max().item())
+            print(f"{tag}_proj out        ", out.abs().min().item(), out.abs().max().item())
 
-        # stop after first forward so logs stay short
+            # also inspect int‑8 quantiser metadata
+            if hasattr(proj, "scales"):
+                s = proj.scales
+                z = proj.zeros
+                print(f"  scales min/max      {s.min().item():.3e}  {s.max().item():.3e}")
+                print(f"  zeros  min/max      {z.min().item():.0f}      {z.max().item():.0f}")
+
+        # stop after printing once so logs stay short
         sys.exit(0)
 
     # `prepend=True` ensures the spy runs *before* original forward
