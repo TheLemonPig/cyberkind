@@ -113,88 +113,48 @@ for layer in model.backbone_layers:
     attn.v_proj.register_forward_hook(_cast_fp16)
 
 # ---------------------------------------------------------------------------
-# gemma_debug.py  –  run:  python gemma_debug.py
+#  LIGHTWEIGHT DEBUG HOOKS – will pin‑point first inf/nan without altering the
+#  model's forward signatures.
 # ---------------------------------------------------------------------------
-import torch, types, math, contextlib
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
+def add_debug_hooks(model):
+    """
+    Register forward hooks on every Linear layer and on attention
+    score tensors.  Stops in pdb at the first inf/nan.
+    """
+    import types, pdb
 
-MODEL_ID = "google/gemma-7b"
-DTYPE    = torch.bfloat16
-DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
+    def stats(name, t):
+        if not torch.is_tensor(t):
+            return
+        with torch.no_grad():
+            mx, mn = t.max().item(), t.min().item()
+            bad = torch.isinf(t).any() or torch.isnan(t).any()
+        print(f"{name:<45}  [{mn:8.2f}, {mx:8.2f}]" + ("  <-- 🔥" if bad else ""))
+        if bad:
+            pdb.set_trace()
 
-# ---------- helper ----------------------------------------------------------
-def stats(name, t):
-    if not torch.is_tensor(t):
-        return
-    mx = t.max().item()
-    mn = t.min().item()
-    print(f"{name:<25}  shape={tuple(t.shape):<15}  [{mn:>9.2f}, {mx:>9.2f}]"
-          + ("   <-- 🔥 INF/NAN" if (torch.isinf(t)|torch.isnan(t)).any() else ""))
+    # 1) every Linear's output
+    for n, m in model.named_modules():
+        if isinstance(m, nn.Linear):
+            m.register_forward_hook(lambda mod, _, out, n=n: stats(f"{n}.out", out))
 
-def break_if_bad(t, where):
-    if torch.isinf(t).any() or torch.isnan(t).any():
-        print(f"\n*** First bad value inside: {where} ***")
-        import pdb; pdb.set_trace()
+    # 2) attention score tensors (Gemma calls Softmax after scaling)
+    from transformers.models.gemma.modeling_gemma import GemmaAttention
 
-# ---------- monkey-patch one decoder layer ----------------------------------
-def wrap_decoder_layer(layer: GemmaDecoderLayer, idx: int):
+    def attn_hook(self, proj_q, proj_k, proj_v, *args, **kwargs):
+        # called *before* soft‑max – safest place to catch overflow
+        scores = (proj_q @ proj_k.transpose(-2, -1)) * self.scale
+        stats(f"{self.__class__.__name__}.scores", scores)
+        return proj_q, proj_k, proj_v, *args  # pass through
 
-    orig_attn = layer.self_attn.forward
-    orig_mlp  = layer.mlp.forward
+    for n, m in model.named_modules():
+        if isinstance(m, GemmaAttention) and not hasattr(m, "_dbg"):
+            m.register_forward_pre_hook(attn_hook)
+            m._dbg = True  # mark so we don't double‑hook
 
-    def attn_fwd(self, hidden_states, **kw):
-        stats(f"L{idx}.input", hidden_states)
-        break_if_bad(hidden_states, f"layer {idx} input")
-
-        ## 1) pre-norm
-        hidden_states = self.input_layernorm(hidden_states)
-        stats(f"L{idx}.ln1_out", hidden_states)
-
-        ## 2) q/k/v projections
-        q = self.q_proj(hidden_states); stats(f"L{idx}.Q", q)
-        k = self.k_proj(hidden_states); stats(f"L{idx}.K", k)
-        v = self.v_proj(hidden_states); stats(f"L{idx}.V", v)
-
-        ## 3) rotary + score
-        q, k = self.rotary(q, k)
-        scores = (q @ k.transpose(-2,-1)) * self.scale
-        stats(f"L{idx}.scores", scores)
-        break_if_bad(scores, f"layer {idx} attn scores")
-
-        ## 4) soft-max
-        probs = torch.softmax(scores, dim=-1)
-        stats(f"L{idx}.probs", probs)
-        break_if_bad(probs, f"layer {idx} attn probs")
-
-        ## 5) weighted value + o_proj
-        ctx   = probs @ v
-        out   = self.o_proj(ctx)
-        stats(f"L{idx}.attn_out", out)
-        return out, None  # Gemma returns (hidden, None)
-
-    def mlp_fwd(self, hidden_states):
-        stats(f"L{idx}.mlp_in", hidden_states)
-        out = orig_mlp(hidden_states)
-        stats(f"L{idx}.mlp_out", out)
-        break_if_bad(out, f"layer {idx} mlp_out")
-        return out
-
-    layer.self_attn.forward = types.MethodType(attn_fwd, layer.self_attn)
-    layer.mlp.forward       = types.MethodType(mlp_fwd , layer.mlp)
-
-# ---------- patch every backbone layer ------------------------
-
-for i, dec_layer in enumerate(model.backbone_layers):
-    wrap_decoder_layer(dec_layer, i)
-
-tok = AutoTokenizer.from_pretrained(MODEL_ID)
-inp = tok("quick debug test", return_tensors="pt").to(DEVICE)
-
-with torch.no_grad():
-    _ = model(**inp)
-
-print("\n>>> forward finished without detecting inf/nan <<<")
+# attach hooks once
+add_debug_hooks(model)
+# ---------------------------------------------------------------------------
 
 print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
 model.to(accelerator.device)
