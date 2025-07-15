@@ -11,66 +11,66 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16
 
 # ---------------------------------------------------------------------------
-class CrossAttentionFromSelf(nn.Module):
-    """Cross-attention reusing an existing self-attention's Q/K/V/O weights."""
-    def __init__(self, self_attn: nn.Module):
-        super().__init__()
-        # Recreate the 4 projection layers from the original, cloning weights on CPU
-        for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
-            src = getattr(self_attn, name)
-            # build a fresh Linear with the same dims, on CPU
-            layer = nn.Linear(src.in_features, src.out_features, bias=src.bias is not None)
-            # clone the int8-backed weight to CPU, cast into BF16, then copy
-            w = src.weight.data.detach().cpu().clone().to(torch.bfloat16)
-            layer.weight.data.copy_(w)
-            # same for bias if present
-            if src.bias is not None:
-                b = src.bias.data.detach().cpu().clone().to(torch.bfloat16)
-                layer.bias.data.copy_(b)
-            setattr(self, name, layer)
+# class CrossAttentionFromSelf(nn.Module):
+#     """Cross-attention reusing an existing self-attention's Q/K/V/O weights."""
+#     def __init__(self, self_attn: nn.Module):
+#         super().__init__()
+#         # Recreate the 4 projection layers from the original, cloning weights on CPU
+#         for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
+#             src = getattr(self_attn, name)
+#             # build a fresh Linear with the same dims, on CPU
+#             layer = nn.Linear(src.in_features, src.out_features, bias=src.bias is not None)
+#             # clone the int8-backed weight to CPU, cast into BF16, then copy
+#             w = src.weight.data.detach().cpu().clone().to(torch.bfloat16)
+#             layer.weight.data.copy_(w)
+#             # same for bias if present
+#             if src.bias is not None:
+#                 b = src.bias.data.detach().cpu().clone().to(torch.bfloat16)
+#                 layer.bias.data.copy_(b)
+#             setattr(self, name, layer)
 
-        # infer head count and dimension
-        hidden = self.q_proj.out_features
-        num_heads = getattr(self_attn, 'num_heads', None) or getattr(self_attn, 'n_heads', None)
-        if num_heads and hidden % int(num_heads) == 0:
-            self.num_heads = int(num_heads)
-        else:
-            # fallback to single head
-            self.num_heads = 16  # I looked it up, Gemma uses 16 heads
-            print(f"Warning: {self_attn.__class__.__name__} has no num_heads or n_heads, assuming 16 heads.")
-        self.head_dim = hidden // self.num_heads
-        self.scale = self.head_dim ** -0.5
-        # optional rotary embeddings
-        # self.rotary = 
-        # dropout
-        drop = getattr(self_attn, 'dropout', None)
-        self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
+#         # infer head count and dimension
+#         hidden = self.q_proj.out_features
+#         num_heads = getattr(self_attn, 'num_heads', None) or getattr(self_attn, 'n_heads', None)
+#         if num_heads and hidden % int(num_heads) == 0:
+#             self.num_heads = int(num_heads)
+#         else:
+#             # fallback to single head
+#             self.num_heads = 16  # I looked it up, Gemma uses 16 heads
+#             print(f"Warning: {self_attn.__class__.__name__} has no num_heads or n_heads, assuming 16 heads.")
+#         self.head_dim = hidden // self.num_heads
+#         self.scale = self.head_dim ** -0.5
+#         # optional rotary embeddings
+#         # self.rotary = 
+#         # dropout
+#         drop = getattr(self_attn, 'dropout', None)
+#         self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
 
-    def _reshape(self, x: torch.Tensor, batch: int):
-        seq = x.size(1)
-        return x.view(batch, seq, self.num_heads, self.head_dim).transpose(1, 2)
+#     def _reshape(self, x: torch.Tensor, batch: int):
+#         seq = x.size(1)
+#         return x.view(batch, seq, self.num_heads, self.head_dim).transpose(1, 2)
 
-    def forward(self, query: torch.Tensor, key_value: torch.Tensor, mask: Optional[torch.Tensor] = None):
-        bsz = query.size(0)
-        # project and reshape
-        q = self._reshape(self.q_proj(query), bsz)
-        k = self._reshape(self.k_proj(key_value), bsz)
-        v = self._reshape(self.v_proj(key_value), bsz)
-        # rotary if present
-        if self.rotary is not None:
-            q, k = self.rotary(q, k)
-        else:
-            assert "rotary is missing"
-        # scaled dot-product
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        if mask is not None:
-            attn = attn + mask
-        attn = torch.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
-        # combine heads
-        out = attn @ v  # (bsz, heads, seq, head_dim)
-        out = out.transpose(1, 2).reshape(bsz, -1, self.num_heads * self.head_dim)
-        return self.o_proj(out)
+#     def forward(self, query: torch.Tensor, key_value: torch.Tensor, mask: Optional[torch.Tensor] = None):
+#         bsz = query.size(0)
+#         # project and reshape
+#         q = self._reshape(self.q_proj(query), bsz)
+#         k = self._reshape(self.k_proj(key_value), bsz)
+#         v = self._reshape(self.v_proj(key_value), bsz)
+#         # rotary if present
+#         if self.rotary is not None:
+#             q, k = self.rotary(q, k)
+#         else:
+#             assert "rotary is missing"
+#         # scaled dot-product
+#         attn = (q @ k.transpose(-2, -1)) * self.scale
+#         if mask is not None:
+#             attn = attn + mask
+#         attn = torch.softmax(attn, dim=-1)
+#         attn = self.dropout(attn)
+#         # combine heads
+#         out = attn @ v  # (bsz, heads, seq, head_dim)
+#         out = out.transpose(1, 2).reshape(bsz, -1, self.num_heads * self.head_dim)
+#         return self.o_proj(out)
 
 # ---------------------------------------------------------------------------
 class HybridAttention(nn.Module):
@@ -233,6 +233,9 @@ class ModuleBlock(nn.Module):
 
         # hybrid attention: first n_self heads = self, rest = cross
         self.hybrid_attn = HybridAttention(orig_attn, n_self=n_self, mirror=False)
+        # Gemma applies an RMSNorm before every attention block; without it
+        # hidden amplitudes (~50‑60) blow up the soft‑max. Re‑insert it here.
+        self.pre_ln = nn.RMSNorm(hidden, eps=1e-5)
         self.cross_ln = nn.RMSNorm(hidden, eps=1e-5)
         # highways
         self.driver = GatedHighway(hidden)
@@ -248,10 +251,13 @@ class ModuleBlock(nn.Module):
         """
         Standard block (4096‑d throughout): hybrid attention → driver → FFN → feedback.
         """
-        # Attention (4096‑d everywhere)
-        assert not torch.isnan(x_back).any(), "NaN already in x_back"
-        assert not torch.isinf(x_back).any(), "Infinity already in x_back"
-        attn_out = self.hybrid_attn(x_mod, x_back, mask)
+        # Gemma normalises inputs before attention – do the same
+        x_q  = self.pre_ln(x_mod)
+        x_kv = self.pre_ln(x_back)
+
+        assert not torch.isnan(x_kv).any(), "NaN already in x_kv"
+        assert not torch.isnan(x_q).any(),  "NaN already in x_q"
+        attn_out = self.hybrid_attn(x_q, x_kv, mask)
         assert not torch.isnan(attn_out).any(), "NaN before cross_ln"
         attn_out = self.cross_ln(attn_out)
 
