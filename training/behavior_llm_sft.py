@@ -172,7 +172,8 @@ def add_layer18_spy(model):
     import math, sys
 
     try:
-        bad = model.backbone_layers[18].self_attn
+        dec18 = model.backbone_layers[18]          # GemmaDecoderLayer
+        attn18 = dec18.self_attn                   # GemmaAttention inside it
     except (AttributeError, IndexError):
         print("⚠️  Could not locate backbone_layers[18]; spy not installed.")
         return
@@ -180,7 +181,7 @@ def add_layer18_spy(model):
     def spy(module, args, kwargs):
         # hidden_states may be positional or keyword
         h = args[0] if args else kwargs.get("hidden_states")
-        ln = module.input_layernorm  # RMSNorm before attention
+        ln = dec18.input_layernorm   # RMSNorm lives in the decoder layer
         x  = ln(h)
 
         print("\n=== L18 SPY ===")
@@ -196,7 +197,7 @@ def add_layer18_spy(model):
         sys.exit(0)
 
     # `prepend=True` ensures the spy runs *before* original forward
-    bad.register_forward_pre_hook(spy, with_kwargs=True, prepend=True)
+    attn18.register_forward_pre_hook(spy, with_kwargs=True, prepend=True)
     print("🔍 Installed layer‑18 spy hook")
 
 # Attach the spy once
