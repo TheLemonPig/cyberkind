@@ -380,7 +380,7 @@ class GemmaModular(nn.Module):
             print("‖before RoPE‖", h_back.abs().max())
             cos, sin = self.rotary_emb(h_back, position_ids)
             h_back = back_layer(
-                h_back + feedback,
+                h_back,
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attn_mask,
                 output_attentions=False
