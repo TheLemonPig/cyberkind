@@ -161,6 +161,69 @@ def add_debug_hooks(model):
 add_debug_hooks(model)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+#  EXTRA SPY: print layer‑norm and q/k/v outputs for decoder layer 18 only
+# ---------------------------------------------------------------------------
+def add_layer18_spy(model):
+    """
+    For backbone layer 18, print stats right after layer‑norm and after each
+    q/k/v projection, then abort the run so you don’t hit the overflow.
+    """
+    import math, sys
+
+    try:
+        bad = model.backbone_layers[18].self_attn
+    except (AttributeError, IndexError):
+        print("⚠️  Could not locate backbone_layers[18]; spy not installed.")
+        return
+
+    def spy(module, args, kwargs):
+        # hidden_states may be positional or keyword
+        h = args[0] if args else kwargs.get("hidden_states")
+        ln = module.input_layernorm  # RMSNorm before attention
+        x  = ln(h)
+
+        print("\n=== L18 SPY ===")
+        print("after layer‑norm   ", x.abs().min().item(), x.abs().max().item())
+
+        for tag, proj in {"q": module.q_proj,
+                          "k": module.k_proj,
+                          "v": module.v_proj}.items():
+            out = proj(x)
+            print(f"{tag}_proj out     ", out.abs().min().item(), out.abs().max().item())
+
+        # stop after first forward so logs stay short
+        sys.exit(0)
+
+    # `prepend=True` ensures the spy runs *before* original forward
+    bad.register_forward_pre_hook(spy, with_kwargs=True, prepend=True)
+    print("🔍 Installed layer‑18 spy hook")
+
+# Attach the spy once
+# Attach the spy once
+add_layer18_spy(model)
+# ---------------------------------------------------------------------------
+#  EXTRA SPY 2: print min/max of Q and K right *after* rotary embedding
+# ---------------------------------------------------------------------------
+from functools import partial
+from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
+
+def rot_hook(tag, module, args, output):
+    # output is (q_after, k_after)
+    q_after, k_after = output
+    print(f"{tag}.after_rotary  q  [{q_after.abs().min():.2f}, {q_after.abs().max():.2f}]")
+    print(f"{tag}.after_rotary  k  [{k_after.abs().min():.2f}, {k_after.abs().max():.2f}]")
+
+try:
+    l18_attn = model.backbone_layers[18].self_attn
+    # Gemma’s attention module exposes .rotary
+    l18_attn.rotary.register_forward_hook(partial(rot_hook, "L18"), with_kwargs=False)
+    print("🔍 Installed rotary spy for layer‑18")
+except (AttributeError, IndexError):
+    print("⚠️  Could not install rotary spy – layer 18 missing.")
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
 print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
 model.to(accelerator.device)
 
