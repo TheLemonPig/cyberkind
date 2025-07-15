@@ -199,7 +199,8 @@ def add_layer18_spy(model):
                 z = proj.zeros
                 print(f"  scales min/max      {s.min().item():.3e}  {s.max().item():.3e}")
                 print(f"  zeros  min/max      {z.min().item():.0f}      {z.max().item():.0f}")
-
+        print("q scales min/max", module.q_proj.scales.min().item(), module.q_proj.scales.max().item())
+        print("q zeros  min/max", module.q_proj.zeros.min().item(),  module.q_proj.zeros.max().item())
         # stop after printing once so logs stay short
         sys.exit(0)
 
