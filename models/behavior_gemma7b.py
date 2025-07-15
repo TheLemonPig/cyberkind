@@ -269,6 +269,12 @@ class ModuleBlock(nn.Module):
         return x_mod, delta
 
 # ---------------------------------------------------------------------------
+
+def log_max(name):
+    def _hook(_, __, output):
+        print(f"[{name}] max|x| = {output.abs().max().item():.2f}")
+    return _hook
+
 class GemmaModular(nn.Module):
     def __init__(self, base: AutoModelForCausalLM):
         super().__init__()
@@ -323,8 +329,13 @@ class GemmaModular(nn.Module):
         labels: Optional[torch.Tensor] = None,
         **kwargs
     ):
-        if attention_mask is not None and attention_mask.dtype == torch.long:
-            attention_mask = attention_mask.to(dtype=torch.bool)
+        # 1️⃣ give the backbone what it expects: an *additive* float mask
+        if attention_mask is not None:
+            # convert 1 → 0   and   0 → -65 000 (≈ -inf in fp16)
+            attn_mask = attention_mask.to(torch.float32)
+            attn_mask = (1.0 - attn_mask) * torch.finfo(h_back.dtype).min
+        else:
+            attn_mask = None
         B, T = input_ids.shape
         h_back = self.embed(input_ids)
 
@@ -336,8 +347,9 @@ class GemmaModular(nn.Module):
         # build RoPE tuple for this sequence
         seq_len = h_back.size(1)
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
-        cos, sin = self.rotary_emb(h_back, position_ids)           # BF16 tensors
         for idx, layer in enumerate(self.backbone_layers[:self.split]):
+            cos, sin = self.rotary_emb(h_back, position_ids, seq_dimension=1, layer_idx=idx)
+            layer.register_forward_hook(log_max(f"bb{idx}"))
             assert not torch.isinf(h_back).any(), "Infinity already in h_back {idx} layers in"
             assert not torch.isnan(h_back).any(), f"NaN already in h_back {idx} layers in"
             h_back = layer(
@@ -357,7 +369,7 @@ class GemmaModular(nn.Module):
         ):
             print("‖before RoPE‖", h_back.abs().max())
             h_back = back_layer(
-                h_back,
+                h_back + feedback,
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attention_mask,
                 output_attentions=False

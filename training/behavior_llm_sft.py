@@ -92,7 +92,9 @@ else:
         token=hf_token,
     )
 # -----------------------------
+torch.autograd.set_detect_anomaly(True)
 model = GemmaModular(backbone)
+torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 model.config = AutoConfig.from_pretrained(
     BACKBONE_ID,
     quantization_config=quant_config,
