@@ -112,6 +112,90 @@ for layer in model.backbone_layers:
     attn.k_proj.register_forward_hook(_cast_fp16)
     attn.v_proj.register_forward_hook(_cast_fp16)
 
+# ---------------------------------------------------------------------------
+# gemma_debug.py  –  run:  python gemma_debug.py
+# ---------------------------------------------------------------------------
+import torch, types, math, contextlib
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
+
+MODEL_ID = "google/gemma-7b"
+DTYPE    = torch.bfloat16
+DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ---------- helper ----------------------------------------------------------
+def stats(name, t):
+    if not torch.is_tensor(t):
+        return
+    mx = t.max().item()
+    mn = t.min().item()
+    print(f"{name:<25}  shape={tuple(t.shape):<15}  [{mn:>9.2f}, {mx:>9.2f}]"
+          + ("   <-- 🔥 INF/NAN" if (torch.isinf(t)|torch.isnan(t)).any() else ""))
+
+def break_if_bad(t, where):
+    if torch.isinf(t).any() or torch.isnan(t).any():
+        print(f"\n*** First bad value inside: {where} ***")
+        import pdb; pdb.set_trace()
+
+# ---------- monkey-patch one decoder layer ----------------------------------
+def wrap_decoder_layer(layer: GemmaDecoderLayer, idx: int):
+
+    orig_attn = layer.self_attn.forward
+    orig_mlp  = layer.mlp.forward
+
+    def attn_fwd(self, hidden_states, **kw):
+        stats(f"L{idx}.input", hidden_states)
+        break_if_bad(hidden_states, f"layer {idx} input")
+
+        ## 1) pre-norm
+        hidden_states = self.input_layernorm(hidden_states)
+        stats(f"L{idx}.ln1_out", hidden_states)
+
+        ## 2) q/k/v projections
+        q = self.q_proj(hidden_states); stats(f"L{idx}.Q", q)
+        k = self.k_proj(hidden_states); stats(f"L{idx}.K", k)
+        v = self.v_proj(hidden_states); stats(f"L{idx}.V", v)
+
+        ## 3) rotary + score
+        q, k = self.rotary(q, k)
+        scores = (q @ k.transpose(-2,-1)) * self.scale
+        stats(f"L{idx}.scores", scores)
+        break_if_bad(scores, f"layer {idx} attn scores")
+
+        ## 4) soft-max
+        probs = torch.softmax(scores, dim=-1)
+        stats(f"L{idx}.probs", probs)
+        break_if_bad(probs, f"layer {idx} attn probs")
+
+        ## 5) weighted value + o_proj
+        ctx   = probs @ v
+        out   = self.o_proj(ctx)
+        stats(f"L{idx}.attn_out", out)
+        return out, None  # Gemma returns (hidden, None)
+
+    def mlp_fwd(self, hidden_states):
+        stats(f"L{idx}.mlp_in", hidden_states)
+        out = orig_mlp(hidden_states)
+        stats(f"L{idx}.mlp_out", out)
+        break_if_bad(out, f"layer {idx} mlp_out")
+        return out
+
+    layer.self_attn.forward = types.MethodType(attn_fwd, layer.self_attn)
+    layer.mlp.forward       = types.MethodType(mlp_fwd , layer.mlp)
+
+# ---------- patch every backbone layer ------------------------
+
+for i, dec_layer in enumerate(model.backbone_layers):
+    wrap_decoder_layer(dec_layer, i)
+
+tok = AutoTokenizer.from_pretrained(MODEL_ID)
+inp = tok("quick debug test", return_tensors="pt").to(DEVICE)
+
+with torch.no_grad():
+    _ = model(**inp)
+
+print("\n>>> forward finished without detecting inf/nan <<<")
+
 print(f"[Rank {rank}] Gemma modular made on {accelerator.device}")
 model.to(accelerator.device)
 
