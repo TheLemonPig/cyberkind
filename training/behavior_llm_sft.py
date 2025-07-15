@@ -138,18 +138,17 @@ def add_debug_hooks(model):
         if isinstance(m, nn.Linear):
             m.register_forward_hook(lambda mod, _, out, n=n: stats(f"{n}.out", out))
 
-    # 2) attention score tensors (Gemma calls Softmax after scaling)
+    # 2) hidden‑state input to each GemmaAttention (before qkv projections)
     from transformers.models.gemma.modeling_gemma import GemmaAttention
 
-    def attn_hook(self, proj_q, proj_k, proj_v, *args, **kwargs):
-        # called *before* soft‑max – safest place to catch overflow
-        scores = (proj_q @ proj_k.transpose(-2, -1)) * self.scale
-        stats(f"{self.__class__.__name__}.scores", scores)
-        return proj_q, proj_k, proj_v, *args  # pass through
+    def attn_pre_hook(mod, inp, n=None):
+        # inp is a tuple; first element is hidden_states
+        hidden = inp[0]
+        stats(f"{n}.attn_in", hidden)
 
     for n, m in model.named_modules():
         if isinstance(m, GemmaAttention) and not hasattr(m, "_dbg"):
-            m.register_forward_pre_hook(attn_hook)
+            m.register_forward_pre_hook(lambda mod, inp, n=n: attn_pre_hook(mod, inp, n))
             m._dbg = True  # mark so we don't double‑hook
 
 # attach hooks once
