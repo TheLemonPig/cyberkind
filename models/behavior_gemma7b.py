@@ -347,7 +347,7 @@ class GemmaModular(nn.Module):
         seq_len = h_back.size(1)
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
         for idx, layer in enumerate(self.backbone_layers[:self.split]):
-            cos, sin = self.rotary_emb(h_back, position_ids, seq_dimension=1, layer_idx=idx)
+            cos, sin = self.rotary_emb(h_back, position_ids, layer_idx=idx)
             layer.register_forward_hook(log_max(f"bb{idx}"))
             assert not torch.isinf(h_back).any(), "Infinity already in h_back {idx} layers in"
             assert not torch.isnan(h_back).any(), f"NaN already in h_back {idx} layers in"
@@ -363,10 +363,11 @@ class GemmaModular(nn.Module):
         h_mod = h_back.clone()
         feedback = torch.zeros_like(h_back)
         # paired layers
-        for back_layer, mod_block in zip(
-            self.backbone_layers[self.split:], self.mod_layers
+        for idx, (back_layer, mod_block) in enumerate(
+            zip(self.backbone_layers[self.split:], self.mod_layers)
         ):
             print("‖before RoPE‖", h_back.abs().max())
+            cos, sin = self.rotary_emb(h_back, position_ids, layer_idx=idx)
             h_back = back_layer(
                 h_back + feedback,
                 position_embeddings=(cos, sin),             # ← NEW
