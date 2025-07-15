@@ -140,16 +140,22 @@ def add_debug_hooks(model):
 
     # 2) hidden‑state input to each GemmaAttention (before qkv projections)
     from transformers.models.gemma.modeling_gemma import GemmaAttention
+    from functools import partial
 
-    def attn_pre_hook(mod, inp, n=None):
-        # inp is a tuple; first element is hidden_states
-        hidden = inp[0]
-        stats(f"{n}.attn_in", hidden)
+    def attn_pre_hook(name, stats_fn, module, args, kwargs):
+        """
+        Works for both positional and keyword calling conventions.
+        Triggered immediately before q/k/v projection.
+        """
+        hidden = args[0] if args else kwargs.get("hidden_states", None)
+        if hidden is not None:
+            stats_fn(f"{name}.attn_in", hidden)
 
-    for n, m in model.named_modules():
-        if isinstance(m, GemmaAttention) and not hasattr(m, "_dbg"):
-            m.register_forward_pre_hook(lambda mod, inp, n=n: attn_pre_hook(mod, inp, n))
-            m._dbg = True  # mark so we don't double‑hook
+    for name, module in model.named_modules():
+        if isinstance(module, GemmaAttention) and not hasattr(module, "_dbg"):
+            hook = partial(attn_pre_hook, name, stats)  # capture layer name & stats fn
+            module.register_forward_pre_hook(hook, with_kwargs=True)
+            module._dbg = True  # avoid double‑hooking
 
 # attach hooks once
 add_debug_hooks(model)
