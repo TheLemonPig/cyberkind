@@ -199,8 +199,12 @@ def add_layer18_spy(model):
                 z = proj.zeros
                 print(f"  scales min/max      {s.min().item():.3e}  {s.max().item():.3e}")
                 print(f"  zeros  min/max      {z.min().item():.0f}      {z.max().item():.0f}")
-        print("q scales min/max", module.q_proj.scales.min().item(), module.q_proj.scales.max().item())
-        print("q zeros  min/max", module.q_proj.zeros.min().item(),  module.q_proj.zeros.max().item())
+
+        # explicitly repeat q_proj scales/zeros so they're easy to spot
+        if hasattr(module.q_proj, "scales"):
+            qs, qz = module.q_proj.scales, module.q_proj.zeros
+            print(f"q scales min/max {qs.min().item():.3e}  {qs.max().item():.3e}")
+            print(f"q zeros  min/max {qz.min().item():.0f}     {qz.max().item():.0f}")
         # stop after printing once so logs stay short
         sys.exit(0)
 
