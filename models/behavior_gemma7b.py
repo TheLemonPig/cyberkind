@@ -295,7 +295,7 @@ class GemmaModular(nn.Module):
         # self.behave = behave.model
         assert predict.config.num_hidden_layers >= 8 and behave.config.num_hidden_layers >= 8, "Number of layers to slice larger than number in model"
         self.split = predict.config.num_hidden_layers - layers
-        hidden_dim = base.config.hidden_size   # Gemma‑7B = 4096
+        hidden_dim = self.behave.config.hidden_size   # Gemma‑7B = 4096
 
         for p in self.predict.model.parameters():
             p.requires_grad = False
