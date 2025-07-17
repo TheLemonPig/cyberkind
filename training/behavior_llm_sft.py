@@ -190,25 +190,44 @@ def add_layer18_spy(model):
         for tag, proj in {"q": module.q_proj,
                           "k": module.k_proj,
                           "v": module.v_proj}.items():
+            # --- put this inside the for-loop over {"q":…, "k":…, "v":…} --------------
             out = proj(x)
             print(f"{tag}_proj out        [{out.abs().min():.5f}, {out.abs().max():.5f}]")
 
-            # — quantiser metadata —
-            if hasattr(proj, "scales"):
-                s, z = proj.scales, proj.zeros
-                print(f"  scales min/max      {s.min().item():.3e}  {s.max().item():.3e}")
-                print(f"  zeros  min/max      {z.min().item():.0f}     {z.max().item():.0f}")
+            # ---- try every known scale/zero layout -----------------------------------
+            scale_t, zero_t = None, None
+            if hasattr(proj, "scales"):                # classic layout (≤ 0.41)
+                scale_t, zero_t = proj.scales, proj.zeros
+            elif hasattr(proj.weight, "SCB"):          # v0.42-0.44
+                scale_t, zero_t = proj.weight.SCB[:, 0], proj.weight.SCB[:, 1]
+            elif hasattr(proj.weight, "CB"):           # ≥ 0.45
+                scale_t, zero_t = proj.weight.CB[:, 0], proj.weight.CB[:, 1]
+
+            if scale_t is not None:
+                print(f"  scale  min/max      {scale_t.min().item():.3e}  "
+                    f"{scale_t.max().item():.3e}")
+                print(f"  zero   min/max      {zero_t.min().item():.0f}     "
+                    f"{zero_t.max().item():.0f}")
+            else:
+                print("  ⚠️  scales/zeros attribute not found on this BnB build")
+
+            # ---- de-quantise weights once to see the *real* fp32 matrix --------------
+            w_int8 = proj.weight       # raw int8
+            if scale_t is not None:
+                w_fp32 = (w_int8.float() - zero_t.unsqueeze(1)) * scale_t.unsqueeze(1)
+            else:
+                w_fp32 = w_int8.float()   # fall-back (won’t match real kernel)
+
+            print(f"  weight abs-max       {w_fp32.abs().max():.3e}")
+            print(f"  weight inf/nan       inf={torch.isinf(w_fp32).any()}  "
+                f"nan={torch.isnan(w_fp32).any()}")
+            # --------------------------------------------------------------------------
 
             # — de‑quantised weight stats —
             w = proj.weight.float()          # convert 8‑bit block to fp32
             print(f"  weight abs‑max       {w.abs().max():.3e}")
             print(f"  weight inf/nan       inf={torch.isinf(w).any()}  nan={torch.isnan(w).any()}")
 
-        # explicitly repeat q_proj scales/zeros so they're easy to spot
-        if hasattr(module.q_proj, "scales"):
-            qs, qz = module.q_proj.scales, module.q_proj.zeros
-            print(f"q scales min/max {qs.min().item():.3e}  {qs.max().item():.3e}")
-            print(f"q zeros  min/max {qz.min().item():.0f}     {qz.max().item():.0f}")
         # stop after printing once so logs stay short
         sys.exit(0)
 
