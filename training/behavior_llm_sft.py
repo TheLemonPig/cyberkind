@@ -191,14 +191,18 @@ def add_layer18_spy(model):
                           "k": module.k_proj,
                           "v": module.v_proj}.items():
             out = proj(x)
-            print(f"{tag}_proj out        ", out.abs().min().item(), out.abs().max().item())
+            print(f"{tag}_proj out        [{out.abs().min():.5f}, {out.abs().max():.5f}]")
 
-            # also inspect int‑8 quantiser metadata
+            # — quantiser metadata —
             if hasattr(proj, "scales"):
-                s = proj.scales
-                z = proj.zeros
+                s, z = proj.scales, proj.zeros
                 print(f"  scales min/max      {s.min().item():.3e}  {s.max().item():.3e}")
-                print(f"  zeros  min/max      {z.min().item():.0f}      {z.max().item():.0f}")
+                print(f"  zeros  min/max      {z.min().item():.0f}     {z.max().item():.0f}")
+
+            # — de‑quantised weight stats —
+            w = proj.weight.float()          # convert 8‑bit block to fp32
+            print(f"  weight abs‑max       {w.abs().max():.3e}")
+            print(f"  weight inf/nan       inf={torch.isinf(w).any()}  nan={torch.isnan(w).any()}")
 
         # explicitly repeat q_proj scales/zeros so they're easy to spot
         if hasattr(module.q_proj, "scales"):
