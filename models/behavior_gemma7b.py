@@ -295,21 +295,17 @@ class GemmaModular(nn.Module):
         # self.behave = behave.model
         assert predict.config.num_hidden_layers >= 8 and behave.config.num_hidden_layers >= 8, "Number of layers to slice larger than number in model"
         self.split = predict.config.num_hidden_layers - layers
-        hidden_dim = self.behave.config.hidden_size   # Gemma‑7B = 4096
+        
 
         for p in self.predict.model.parameters():
             p.requires_grad = False
         self.predict.model.embed_tokens.requires_grad_(False)
+        self.predict.model.embed_positions.requires_grad_(False)
         # ✱A — one shared RoPE helper (lives on the same GPU as the first layer)
         # self.rotary_emb = GemmaRotaryEmbedding(self.config).to(
         #     next(self.backbone_layers.parameters()).device
         # )
         #self.embed = self.predict.model.embed_tokens; self.embed.requires_grad_(False)
-        num_tokens = self.behave.embed_tokens.num_embeddings
-        self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
-        self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
-        nn.init.zeros_(self.embed_delta.weight)
-        self.predict.model.embed_positions.requires_grad_(False)
         # -------------------------------------------------------------------
         # build module
 
@@ -327,6 +323,12 @@ class GemmaModular(nn.Module):
             mod_block.to(device, dtype=torch.bfloat16)
             self.behave.append(mod_block)
             prev_hidden = hidden_curr  # next block's "in_dim"
+        # -------------------------------------------------------------------
+        hidden_dim = self.behave.config.hidden_size   # Gemma‑7B = 4096
+        num_tokens = self.behave.embed_tokens.num_embeddings
+        self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
+        self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
+        nn.init.zeros_(self.embed_delta.weight)
         # -------------------------------------------------------------------
         self.norm = behave.model.norm
         self.lm_head = behave.model.lm_head
