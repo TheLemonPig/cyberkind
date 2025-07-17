@@ -9,69 +9,6 @@ from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 BASE_MODEL_ID = "google/gemma-7b"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16
-
-# ---------------------------------------------------------------------------
-# class CrossAttentionFromSelf(nn.Module):
-#     """Cross-attention reusing an existing self-attention's Q/K/V/O weights."""
-#     def __init__(self, self_attn: nn.Module):
-#         super().__init__()
-#         # Recreate the 4 projection layers from the original, cloning weights on CPU
-#         for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
-#             src = getattr(self_attn, name)
-#             # build a fresh Linear with the same dims, on CPU
-#             layer = nn.Linear(src.in_features, src.out_features, bias=src.bias is not None)
-#             # clone the int8-backed weight to CPU, cast into BF16, then copy
-#             w = src.weight.data.detach().cpu().clone().to(torch.bfloat16)
-#             layer.weight.data.copy_(w)
-#             # same for bias if present
-#             if src.bias is not None:
-#                 b = src.bias.data.detach().cpu().clone().to(torch.bfloat16)
-#                 layer.bias.data.copy_(b)
-#             setattr(self, name, layer)
-
-#         # infer head count and dimension
-#         hidden = self.q_proj.out_features
-#         num_heads = getattr(self_attn, 'num_heads', None) or getattr(self_attn, 'n_heads', None)
-#         if num_heads and hidden % int(num_heads) == 0:
-#             self.num_heads = int(num_heads)
-#         else:
-#             # fallback to single head
-#             self.num_heads = 16  # I looked it up, Gemma uses 16 heads
-#             print(f"Warning: {self_attn.__class__.__name__} has no num_heads or n_heads, assuming 16 heads.")
-#         self.head_dim = hidden // self.num_heads
-#         self.scale = self.head_dim ** -0.5
-#         # optional rotary embeddings
-#         # self.rotary = 
-#         # dropout
-#         drop = getattr(self_attn, 'dropout', None)
-#         self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
-
-#     def _reshape(self, x: torch.Tensor, batch: int):
-#         seq = x.size(1)
-#         return x.view(batch, seq, self.num_heads, self.head_dim).transpose(1, 2)
-
-#     def forward(self, query: torch.Tensor, key_value: torch.Tensor, mask: Optional[torch.Tensor] = None):
-#         bsz = query.size(0)
-#         # project and reshape
-#         q = self._reshape(self.q_proj(query), bsz)
-#         k = self._reshape(self.k_proj(key_value), bsz)
-#         v = self._reshape(self.v_proj(key_value), bsz)
-#         # rotary if present
-#         if self.rotary is not None:
-#             q, k = self.rotary(q, k)
-#         else:
-#             assert "rotary is missing"
-#         # scaled dot-product
-#         attn = (q @ k.transpose(-2, -1)) * self.scale
-#         if mask is not None:
-#             attn = attn + mask
-#         attn = torch.softmax(attn, dim=-1)
-#         attn = self.dropout(attn)
-#         # combine heads
-#         out = attn @ v  # (bsz, heads, seq, head_dim)
-#         out = out.transpose(1, 2).reshape(bsz, -1, self.num_heads * self.head_dim)
-#         return self.o_proj(out)
-
 # ---------------------------------------------------------------------------
 class HybridAttention(nn.Module):
     """
@@ -98,20 +35,18 @@ class HybridAttention(nn.Module):
         self.head_dim = hidden // self.n_total
 
         # Clone shared Q projection (was missing)
-        self.q_proj = copy.deepcopy(orig_attn.q_proj).to(torch.bfloat16)
+        self.q_self = orig_attn.q_proj.to(torch.bfloat16)[:,self.head_dim:]
 
+        # Clone K/V for self and cross separately
+        self.k_self = orig_attn.k_proj.to(torch.bfloat16)[:,self.head_dim:]
+        self.k_cross = orig_attn.k_proj.to(torch.bfloat16)[:,:self.head_dim]
+        self.v_self = orig_attn.v_proj.to(torch.bfloat16)[:,self.head_dim:]
+        self.v_cross = orig_attn.v_proj.to(torch.bfloat16)[:,:self.head_dim]
         # Clone shared Q and O
         # separate output projections for self‑ vs cross‑heads (identical at t=0)
-        self.o_proj_self  = copy.deepcopy(orig_attn.o_proj).to(torch.bfloat16)
-        self.o_proj_cross = copy.deepcopy(orig_attn.o_proj).to(torch.bfloat16)
-        self.o_proj = copy.deepcopy(orig_attn.o_proj).to(torch.bfloat16)
-        # Clone K/V for self and cross separately
-        self.k_self = copy.deepcopy(orig_attn.k_proj).to(torch.bfloat16)
-        self.v_self = copy.deepcopy(orig_attn.v_proj).to(torch.bfloat16)
-        self.k_cross = copy.deepcopy(orig_attn.k_proj).to(torch.bfloat16)
-        self.v_cross = copy.deepcopy(orig_attn.v_proj).to(torch.bfloat16)
-        # Rotary + dropout
-        # self.rotary  = 
+        self.o_proj_self  = orig_attn.o_proj.to(torch.bfloat16)[:,self.head_dim:]
+        self.o_proj_cross = orig_attn.o_proj.to(torch.bfloat16)[:,:self.head_dim]
+        # dropout
         drop = getattr(orig_attn, 'dropout', None)
         self.dropout = nn.Dropout(drop.p if drop is not None else 0.0)
         self.scale = self.head_dim ** -0.5
@@ -119,45 +54,24 @@ class HybridAttention(nn.Module):
     def _reshape(self, x, b):  # (B,T,Hd) ➜ (B,H,T,d)
         return x.view(b, -1, self.n_total, self.head_dim).transpose(1, 2)
 
-    def forward(self, x_q, x_kv, mask=None):
-        print("||x_q||_inf", x_q.abs().max().item(), "||x_kv||_inf", x_kv.abs().max().item())
-        assert not torch.isnan(x_kv).any(), "NaNs already in x_kv"
-        assert not torch.isnan(x_q).any(), "NaNs already in x_q"
-        B = x_q.size(0)
-        assert not torch.isnan(x_q).any(), "NaNs already in B"
-        q = self._reshape(self.q_proj(x_q), B)                     # (B,H,T,d)
-        k_self = self._reshape(self.k_self(x_q), B)
-        v_self = self._reshape(self.v_self(x_q), B)
-        k_cross = self._reshape(self.k_cross(x_kv), B)
-        v_cross = self._reshape(self.v_cross(x_kv), B)
+    def forward(self, x_self, x_cross, mask=None):
+        print("||x_self||_inf", x_self.abs().max().item(), "||x_cross||_inf", x_cross.abs().max().item())
+        assert not torch.isnan(x_cross).any(), "NaNs already in x_kv"
+        assert not torch.isnan(x_self).any(), "NaNs already in x_q"
+        B = x_self.size(0)
+        assert not torch.isnan(x_self).any(), "NaNs already in B"
+        q_cross = self._reshape(self.q_self(x_cross), B)
+        q_self = self._reshape(self.q_self(x_self), B)                     # (B,H,T,d)
+        k_self = self._reshape(self.k_self(x_self), B)
+        v_self = self._reshape(self.v_self(x_self), B)
+        k_cross = self._reshape(self.k_cross(x_self), B)
+        v_cross = self._reshape(self.v_cross(x_self), B)
         assert torch.allclose(
             self.k_self.weight.float(), self.k_cross.weight.float(), atol=0, rtol=0
         ), "Weights diverged!"
 
         print("any NaN in k_cross.weight? ", torch.isnan(self.k_cross.weight).any())
         assert not torch.isnan(k_cross).any(), "NaN caused by creating k_cross"
-
-        i0 = self.self_index_start
-        i1 = i0 + self.n_self
-        q_self  = q[:,  i0:i1]
-        k_s     = k_self[:, i0:i1]
-        v_s     = v_self[:, i0:i1]
-
-        # cross heads are the complement
-        q_cross = torch.cat([q[:, :i0],  q[:, i1:]], dim=1)
-        k_c     = torch.cat([k_cross[:, :i0], k_cross[:, i1:]], dim=1)
-        v_c     = torch.cat([v_cross[:, :i0], v_cross[:, i1:]], dim=1)
-
-        assert not torch.isnan(k_c).any(), "NaN caused by cat operation"
-
-        if self.rotary is not None:
-            position_ids = None                     # keep default slice
-            cos, sin = self.rotary(q_self, position_ids)     # ✅ pass tensor
-            q_self,  k_s = apply_rotary_pos_emb(q_self,  k_s, cos, sin, position_ids)
-            q_cross, k_c = apply_rotary_pos_emb(q_cross, k_c, cos, sin, position_ids)
-        else:
-            assert "rotary is missing"
-        assert not torch.isnan(k_c).any(), "NaN caused by applying rotary embeddings"
             
         def attn_block(qh, kh, vh):
             # qh, kh, vh are already BF16 on GPU
@@ -169,9 +83,9 @@ class HybridAttention(nn.Module):
             out = (w @ vh.to(torch.bfloat16)).to(torch.bfloat16)
             return out
 
-        out_self  = attn_block(q_self,  k_s, v_s)
+        out_self  = attn_block(q_self,  k_self, v_self)
         assert not torch.isnan(out_self).any(), "NaN after self attn_block"
-        out_cross = attn_block(q_cross, k_c, v_c)
+        out_cross = attn_block(q_cross, k_cross, v_cross)
         assert not torch.isnan(out_cross).any(), "NaN after cross attn_block"
         out = torch.cat([out_self, out_cross], dim=1)              # (B,H,T,d)
         out_flat = out.transpose(1, 2).reshape(B, -1, self.n_total * self.head_dim)
@@ -329,7 +243,7 @@ class GemmaModular(nn.Module):
         nn.init.zeros_(self.embed_delta.weight)
         # -------------------------------------------------------------------
         self.norm = behave.model.norm
-        self.lm_head = behave.model.lm_head
+        self.lm_head = behave.lm_head
 
     def forward(
         self,
