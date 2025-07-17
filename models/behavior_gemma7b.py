@@ -312,7 +312,7 @@ class GemmaModular(nn.Module):
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
         self.behave = nn.ModuleList()
         # First ModuleBlock now starts at the model hidden size (4096)
-        hidden_dim = self.behave.config.hidden_size   # Gemma‑7B = 4096
+        hidden_dim = behave.config.hidden_size   # Gemma‑7B = 4096
         prev_hidden = hidden_dim
         for bl in behave.layers[:self.split]:
             del bl  # remove all unused layers
@@ -325,7 +325,7 @@ class GemmaModular(nn.Module):
             self.behave.append(mod_block)
             prev_hidden = hidden_curr  # next block's "in_dim"
         # -------------------------------------------------------------------
-        num_tokens = self.behave.embed_tokens.num_embeddings
+        num_tokens = behave.embed_tokens.num_embeddings
         self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
         self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
         nn.init.zeros_(self.embed_delta.weight)
