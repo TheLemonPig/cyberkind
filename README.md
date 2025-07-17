@@ -1,6 +1,9 @@
 
 ##Training
 
+If you are in runpod, I would recommend torch==2.4.0 template over the 2.8.0 one
+(torch==2.8.0 is not yet stable)
+
 For reasons I cannot discern you will need to run all of the below to get it to work
 
 ```
