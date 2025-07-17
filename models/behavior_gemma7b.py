@@ -287,51 +287,49 @@ def log_max(name):
     return _hook
 
 class GemmaModular(nn.Module):
-    def __init__(self, base: AutoModelForCausalLM):
+    def __init__(self, predict: AutoModelForCausalLM, behave: AutoModelForCausalLM, layers: int = 8):
+        
         super().__init__()
-        self.config = base.config
-        N = base.config.num_hidden_layers
-        self.split = N * 2 // 3
+        #self.config = predict.config
+        self.predict = predict.model
+        # self.behave = behave.model
+        assert predict.config.num_hidden_layers >= 8 and behave.config.num_hidden_layers >= 8, "Number of layers to slice larger than number in model"
+        self.split = predict.config.num_hidden_layers - layers
         hidden_dim = base.config.hidden_size   # Gemma‑7B = 4096
-        self.backbone_layers = base.model.layers
 
-        for p in self.backbone_layers.parameters():
+        for p in self.predict.model.parameters():
             p.requires_grad = False
+        self.predict.model.embed_tokens.requires_grad_(False)
         # ✱A — one shared RoPE helper (lives on the same GPU as the first layer)
-        self.rotary_emb = GemmaRotaryEmbedding(self.config).to(
-            next(self.backbone_layers.parameters()).device
-        )
-        self.embed = base.model.embed_tokens; self.embed.requires_grad_(False)
-        num_tokens = self.embed.num_embeddings
+        # self.rotary_emb = GemmaRotaryEmbedding(self.config).to(
+        #     next(self.backbone_layers.parameters()).device
+        # )
+        #self.embed = self.predict.model.embed_tokens; self.embed.requires_grad_(False)
+        num_tokens = self.behave.embed_tokens.num_embeddings
         self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
         self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
         nn.init.zeros_(self.embed_delta.weight)
-        self.pos = getattr(base.model, 'embed_positions', None)
-        if self.pos is not None:
-            self.pos.requires_grad_(False)
+        self.predict.model.embed_positions.requires_grad_(False)
         # -------------------------------------------------------------------
         # build module
 
         # build module blocks without spiking GPU RAM by deep-copying on CPU first
-        self.mod_layers = nn.ModuleList()
+        self.behave = nn.ModuleList()
         # First ModuleBlock now starts at the model hidden size (4096)
         prev_hidden = hidden_dim
-        for bl in self.backbone_layers[self.split:]:
+        for bl in behave.layers[:self.split]:
+            del bl  # remove all unused layers
+        for bl in behave.layers[self.split:]:
             device = next(bl.parameters()).device
-            bl_cpu = bl.to('cpu')
-            bl_copy = copy.deepcopy(bl_cpu)
-            bl.to(device)
-
-            hidden_curr = bl_copy.self_attn.q_proj.out_features
-            mod_block = ModuleBlock(bl_copy, in_dim=prev_hidden)  # map prev → current
+            hidden_curr = bl.self_attn.q_proj.out_features
+            mod_block = ModuleBlock(bl, in_dim=prev_hidden)  # map prev → current
             # keep the module in BF16 so its Linear layers match BF16 activations
             mod_block.to(device, dtype=torch.bfloat16)
-            self.mod_layers.append(mod_block)
-
+            self.behave.append(mod_block)
             prev_hidden = hidden_curr  # next block's "in_dim"
-
-        self.ln_f = copy.deepcopy(base.model.norm)
-        self.lm_head = copy.deepcopy(base.lm_head)
+        # -------------------------------------------------------------------
+        self.norm = behave.model.norm
+        self.lm_head = behave.model.lm_head
 
     def forward(
         self,
@@ -374,26 +372,26 @@ class GemmaModular(nn.Module):
         h_mod = h_back.clone()
         feedback = torch.zeros_like(h_back)
         # paired layers
-        for idx, (back_layer, mod_block) in enumerate(
-            zip(self.backbone_layers[self.split:], self.mod_layers)
+        for idx, (predict_layer, behave_layer) in enumerate(
+            zip(self.predict.layers[self.split:], self.behave.layers)
         ):
-            print("‖before RoPE‖", h_back.abs().max())
+            print("‖before prediction‖", h_back.abs().max())
             cos, sin = self.rotary_emb(h_back, position_ids)
-            h_back = back_layer(
+            h_back = predict_layer(
                 h_back + feedback,
                 position_embeddings=(cos, sin),             # ← NEW
                 attention_mask=attn_mask,
                 output_attentions=False
             )[0]
-            print("‖after  RoPE‖", h_back.abs().max())
+            print("‖after prediction‖", h_back.abs().max())
             # give the tuple to this block’s HybridAttention
-            mod_block.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs  # cos/sin already BF16
+            behave_layer.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs  # cos/sin already BF16
             assert not torch.isinf(h_back).any(), "Infinity already in h_back"
-            h_mod, feedback = mod_block(h_mod, h_back, attn_mask)
+            h_mod, feedback = behave_layer(h_mod, h_back, attn_mask)
             # add tanh-gated delta embedding
             print(h_mod, self.embed_delta(input_ids), self.delta_gate)
             h_mod = h_mod + torch.tanh(self.delta_gate) * self.embed_delta(input_ids)
-        logits = self.lm_head(self.ln_f(h_mod))
+        logits = self.lm_head(self.norm(h_mod))
 
         # When SFTTrainer passes labels, compute causal‑LM loss
         if labels is not None:

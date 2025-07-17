@@ -29,7 +29,8 @@ import inspect, textwrap
 
 # -----------------------------
 
-BACKBONE_ID = "google/gemma-7b"
+PREDICTION_ID = "google/gemma-7b"
+BEHAVIOR_ID   = "google/gemma-7b"
 hf_token = os.getenv("HF_API_KEY", None)
 load_in_8bit = True
 include_test = False
@@ -58,34 +59,48 @@ print(f"[Rank {rank}/{world_size}] using device {accelerator.device}"
 print(f"[Rank {rank}/{world_size}] ✅ ready to load model", flush=True)
 
 tokenizer = AutoTokenizer.from_pretrained(
-    BACKBONE_ID,
+    PREDICTION_ID,
     token=hf_token
     )
 EOS_TOKEN = tokenizer.eos_token
 
 if load_in_8bit:
     quant_config = BitsAndBytesConfig(
-    load_in_8bit=True,
-    bnb_8bit_compute_dtype=torch.float32,   # safer accumulator
-    #bnb_8bit_compute_dtype=torch.float32,   # <- critical change
-    llm_int8_threshold=6.0,            # optional tuning threshold
-    # llm_int8_has_fp16_weight=False,    # optional
+        load_in_8bit=True,
+        bnb_8bit_compute_dtype=torch.float32,   # safer accumulator
+        #bnb_8bit_compute_dtype=torch.float32,   # <- critical change
+        llm_int8_threshold=6.0,            # optional tuning threshold
+        # llm_int8_has_fp16_weight=False,    # optional
     )
     rank = accelerator.local_process_index
     print(f"[Rank {rank}] about to load backbone on GPU {torch.cuda.current_device()}")
     print(f"[Rank {rank}/{world_size}] 📦 loading model now…", flush=True)
-    backbone = AutoModelForCausalLM.from_pretrained(
-    BACKBONE_ID,
-    quantization_config=quant_config,
-    # device_map=accelerator.device, #'auto',   # Uncomment this unless you are using DDP
-    output_hidden_states=True,
-    token=hf_token,
+    predict = AutoModelForCausalLM.from_pretrained(
+        PREDICTION_ID,
+        quantization_config=quant_config,
+        # device_map=accelerator.device, #'auto',   # Uncomment this unless you are using DDP
+        output_hidden_states=True,
+        token=hf_token,
+    )
+    behave = AutoModelForCausalLM.from_pretrained(
+        BEHAVIOR_ID,
+        quantization_config=quant_config,
+        # device_map=accelerator.device, #'auto',   # Uncomment this unless you are using DDP
+        output_hidden_states=True,
+        token=hf_token,
     )
     print(f"[Rank {rank}/{world_size}] 📦 done loading model", flush=True)
     print(f"[Rank {rank}] finished loading backbone")
 else:
-    backbone = AutoModelForCausalLM.from_pretrained(
-        BACKBONE_ID,
+    predict = AutoModelForCausalLM.from_pretrained(
+        PREDICTION_ID,
+        torch_dtype=torch.bfloat16,
+        # device_map=accelerator.device,  # Uncomment this unless you are using DDP
+        output_hidden_states=True,
+        token=hf_token,
+    )
+    behave = AutoModelForCausalLM.from_pretrained(
+        BEHAVIOR_ID,
         torch_dtype=torch.bfloat16,
         # device_map=accelerator.device,  # Uncomment this unless you are using DDP
         output_hidden_states=True,
@@ -93,170 +108,163 @@ else:
     )
 # -----------------------------
 torch.autograd.set_detect_anomaly(True)
-model = GemmaModular(backbone)
-torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-model.config = AutoConfig.from_pretrained(
-    BACKBONE_ID,
-    quantization_config=quant_config,
-    # device_map=accelerator.device, #'auto',   # Uncomment this unless you are using DDP
-    output_hidden_states=True,
-    token=hf_token,
-    )
+model = GemmaModular(predict, behave)
+#torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-def _cast_fp16(_, __, output):
-    return output.to(torch.float16)
+# def _cast_fp16(_, __, output):
+#     return output.to(torch.float16)
 
-for layer in model.backbone_layers:
-    attn = layer.self_attn
-    attn.q_proj.register_forward_hook(_cast_fp16)
-    attn.k_proj.register_forward_hook(_cast_fp16)
-    attn.v_proj.register_forward_hook(_cast_fp16)
+# for layer in model.backbone_layers:
+#     attn = layer.self_attn
+#     attn.q_proj.register_forward_hook(_cast_fp16)
+#     attn.k_proj.register_forward_hook(_cast_fp16)
+#     attn.v_proj.register_forward_hook(_cast_fp16)
 
 # ---------------------------------------------------------------------------
 #  LIGHTWEIGHT DEBUG HOOKS – will pin‑point first inf/nan without altering the
 #  model's forward signatures.
 # ---------------------------------------------------------------------------
-def add_debug_hooks(model):
-    """
-    Register forward hooks on every Linear layer and on attention
-    score tensors.  Stops in pdb at the first inf/nan.
-    """
-    import types, pdb
+# def add_debug_hooks(model):
+#     """
+#     Register forward hooks on every Linear layer and on attention
+#     score tensors.  Stops in pdb at the first inf/nan.
+#     """
+#     import types, pdb
 
-    def stats(name, t):
-        if not torch.is_tensor(t):
-            return
-        with torch.no_grad():
-            mx, mn = t.max().item(), t.min().item()
-            bad = torch.isinf(t).any() or torch.isnan(t).any()
-        print(f"{name:<45}  [{mn:8.2f}, {mx:8.2f}]" + ("  <-- 🔥" if bad else ""))
-        if bad:
-            pdb.set_trace()
+#     def stats(name, t):
+#         if not torch.is_tensor(t):
+#             return
+#         with torch.no_grad():
+#             mx, mn = t.max().item(), t.min().item()
+#             bad = torch.isinf(t).any() or torch.isnan(t).any()
+#         print(f"{name:<45}  [{mn:8.2f}, {mx:8.2f}]" + ("  <-- 🔥" if bad else ""))
+#         if bad:
+#             pdb.set_trace()
 
-    # 1) every Linear's output
-    for n, m in model.named_modules():
-        if isinstance(m, nn.Linear):
-            m.register_forward_hook(lambda mod, _, out, n=n: stats(f"{n}.out", out))
+#     # 1) every Linear's output
+#     for n, m in model.named_modules():
+#         if isinstance(m, nn.Linear):
+#             m.register_forward_hook(lambda mod, _, out, n=n: stats(f"{n}.out", out))
 
-    # 2) hidden‑state input to each GemmaAttention (before qkv projections)
-    from transformers.models.gemma.modeling_gemma import GemmaAttention
-    from functools import partial
+#     # 2) hidden‑state input to each GemmaAttention (before qkv projections)
+#     from transformers.models.gemma.modeling_gemma import GemmaAttention
+#     from functools import partial
 
-    def attn_pre_hook(name, stats_fn, module, args, kwargs):
-        """
-        Works for both positional and keyword calling conventions.
-        Triggered immediately before q/k/v projection.
-        """
-        hidden = args[0] if args else kwargs.get("hidden_states", None)
-        if hidden is not None:
-            stats_fn(f"{name}.attn_in", hidden)
+#     def attn_pre_hook(name, stats_fn, module, args, kwargs):
+#         """
+#         Works for both positional and keyword calling conventions.
+#         Triggered immediately before q/k/v projection.
+#         """
+#         hidden = args[0] if args else kwargs.get("hidden_states", None)
+#         if hidden is not None:
+#             stats_fn(f"{name}.attn_in", hidden)
 
-    for name, module in model.named_modules():
-        if isinstance(module, GemmaAttention) and not hasattr(module, "_dbg"):
-            hook = partial(attn_pre_hook, name, stats)  # capture layer name & stats fn
-            module.register_forward_pre_hook(hook, with_kwargs=True)
-            module._dbg = True  # avoid double‑hooking
+#     for name, module in model.named_modules():
+#         if isinstance(module, GemmaAttention) and not hasattr(module, "_dbg"):
+#             hook = partial(attn_pre_hook, name, stats)  # capture layer name & stats fn
+#             module.register_forward_pre_hook(hook, with_kwargs=True)
+#             module._dbg = True  # avoid double‑hooking
 
-# attach hooks once
-add_debug_hooks(model)
+# # attach hooks once
+# add_debug_hooks(model)
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 #  EXTRA SPY: print layer‑norm and q/k/v outputs for decoder layer 18 only
 # ---------------------------------------------------------------------------
-def add_layer18_spy(model):
-    """
-    For backbone layer 18, print stats right after layer‑norm and after each
-    q/k/v projection, then abort the run so you don’t hit the overflow.
-    """
-    import math, sys
+# def add_layer18_spy(model):
+#     """
+#     For backbone layer 18, print stats right after layer‑norm and after each
+#     q/k/v projection, then abort the run so you don’t hit the overflow.
+#     """
+#     import math, sys
 
-    try:
-        dec18 = model.backbone_layers[18]          # GemmaDecoderLayer
-        attn18 = dec18.self_attn                   # GemmaAttention inside it
-    except (AttributeError, IndexError):
-        print("⚠️  Could not locate backbone_layers[18]; spy not installed.")
-        return
+#     try:
+#         dec18 = model.backbone_layers[18]          # GemmaDecoderLayer
+#         attn18 = dec18.self_attn                   # GemmaAttention inside it
+#     except (AttributeError, IndexError):
+#         print("⚠️  Could not locate backbone_layers[18]; spy not installed.")
+#         return
 
-    def spy(module, args, kwargs):
-        # hidden_states may be positional or keyword
-        h = args[0] if args else kwargs.get("hidden_states")
-        ln = dec18.input_layernorm   # RMSNorm lives in the decoder layer
-        x  = ln(h)
+#     def spy(module, args, kwargs):
+#         # hidden_states may be positional or keyword
+#         h = args[0] if args else kwargs.get("hidden_states")
+#         ln = dec18.input_layernorm   # RMSNorm lives in the decoder layer
+#         x  = ln(h)
 
-        print("\n=== L18 SPY ===")
-        print("after layer‑norm      ", x.abs().min().item(), x.abs().max().item())
+#         print("\n=== L18 SPY ===")
+#         print("after layer‑norm      ", x.abs().min().item(), x.abs().max().item())
 
-        for tag, proj in {"q": module.q_proj,
-                          "k": module.k_proj,
-                          "v": module.v_proj}.items():
-            # --- put this inside the for-loop over {"q":…, "k":…, "v":…} --------------
-            out = proj(x)
-            print(f"{tag}_proj out        [{out.abs().min():.5f}, {out.abs().max():.5f}]")
+#         for tag, proj in {"q": module.q_proj,
+#                           "k": module.k_proj,
+#                           "v": module.v_proj}.items():
+#             # --- put this inside the for-loop over {"q":…, "k":…, "v":…} --------------
+#             out = proj(x)
+#             print(f"{tag}_proj out        [{out.abs().min():.5f}, {out.abs().max():.5f}]")
 
-            # ---- try every known scale/zero layout -----------------------------------
-            scale_t, zero_t = None, None
-            if hasattr(proj, "scales"):                # classic layout (≤ 0.41)
-                scale_t, zero_t = proj.scales, proj.zeros
-            elif hasattr(proj.weight, "SCB"):          # v0.42-0.44
-                scale_t, zero_t = proj.weight.SCB[:, 0], proj.weight.SCB[:, 1]
-            elif hasattr(proj.weight, "CB"):           # ≥ 0.45
-                scale_t, zero_t = proj.weight.CB[:, 0], proj.weight.CB[:, 1]
+#             # ---- try every known scale/zero layout -----------------------------------
+#             scale_t, zero_t = None, None
+#             if hasattr(proj, "scales"):                # classic layout (≤ 0.41)
+#                 scale_t, zero_t = proj.scales, proj.zeros
+#             elif hasattr(proj.weight, "SCB"):          # v0.42-0.44
+#                 scale_t, zero_t = proj.weight.SCB[:, 0], proj.weight.SCB[:, 1]
+#             elif hasattr(proj.weight, "CB"):           # ≥ 0.45
+#                 scale_t, zero_t = proj.weight.CB[:, 0], proj.weight.CB[:, 1]
 
-            if scale_t is not None:
-                print(f"  scale  min/max      {scale_t.min().item():.3e}  "
-                    f"{scale_t.max().item():.3e}")
-                print(f"  zero   min/max      {zero_t.min().item():.0f}     "
-                    f"{zero_t.max().item():.0f}")
-            else:
-                print("  ⚠️  scales/zeros attribute not found on this BnB build")
+#             if scale_t is not None:
+#                 print(f"  scale  min/max      {scale_t.min().item():.3e}  "
+#                     f"{scale_t.max().item():.3e}")
+#                 print(f"  zero   min/max      {zero_t.min().item():.0f}     "
+#                     f"{zero_t.max().item():.0f}")
+#             else:
+#                 print("  ⚠️  scales/zeros attribute not found on this BnB build")
 
-            # ---- de-quantise weights once to see the *real* fp32 matrix --------------
-            w_int8 = proj.weight       # raw int8
-            if scale_t is not None:
-                w_fp32 = (w_int8.float() - zero_t.unsqueeze(1)) * scale_t.unsqueeze(1)
-            else:
-                w_fp32 = w_int8.float()   # fall-back (won’t match real kernel)
+#             # ---- de-quantise weights once to see the *real* fp32 matrix --------------
+#             w_int8 = proj.weight       # raw int8
+#             if scale_t is not None:
+#                 w_fp32 = (w_int8.float() - zero_t.unsqueeze(1)) * scale_t.unsqueeze(1)
+#             else:
+#                 w_fp32 = w_int8.float()   # fall-back (won’t match real kernel)
 
-            print(f"  weight abs-max       {w_fp32.abs().max():.3e}")
-            print(f"  weight inf/nan       inf={torch.isinf(w_fp32).any()}  "
-                f"nan={torch.isnan(w_fp32).any()}")
-            # --------------------------------------------------------------------------
+#             print(f"  weight abs-max       {w_fp32.abs().max():.3e}")
+#             print(f"  weight inf/nan       inf={torch.isinf(w_fp32).any()}  "
+#                 f"nan={torch.isnan(w_fp32).any()}")
+#             # --------------------------------------------------------------------------
 
-            # — de‑quantised weight stats —
-            w = proj.weight.float()          # convert 8‑bit block to fp32
-            print(f"  weight abs‑max       {w.abs().max():.3e}")
-            print(f"  weight inf/nan       inf={torch.isinf(w).any()}  nan={torch.isnan(w).any()}")
+#             # — de‑quantised weight stats —
+#             w = proj.weight.float()          # convert 8‑bit block to fp32
+#             print(f"  weight abs‑max       {w.abs().max():.3e}")
+#             print(f"  weight inf/nan       inf={torch.isinf(w).any()}  nan={torch.isnan(w).any()}")
 
-        # stop after printing once so logs stay short
-        sys.exit(0)
+#         # stop after printing once so logs stay short
+#         sys.exit(0)
 
-    # `prepend=True` ensures the spy runs *before* original forward
-    attn18.register_forward_pre_hook(spy, with_kwargs=True, prepend=True)
-    print("🔍 Installed layer‑18 spy hook")
+#     # `prepend=True` ensures the spy runs *before* original forward
+#     attn18.register_forward_pre_hook(spy, with_kwargs=True, prepend=True)
+#     print("🔍 Installed layer‑18 spy hook")
 
-# Attach the spy once
-# Attach the spy once
-add_layer18_spy(model)
-# ---------------------------------------------------------------------------
-#  EXTRA SPY 2: print min/max of Q and K right *after* rotary embedding
-# ---------------------------------------------------------------------------
-from functools import partial
-from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
+# # Attach the spy once
+# # Attach the spy once
+# add_layer18_spy(model)
+# # ---------------------------------------------------------------------------
+# #  EXTRA SPY 2: print min/max of Q and K right *after* rotary embedding
+# # ---------------------------------------------------------------------------
+# from functools import partial
+# from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
-def rot_hook(tag, module, args, output):
-    # output is (q_after, k_after)
-    q_after, k_after = output
-    print(f"{tag}.after_rotary  q  [{q_after.abs().min():.2f}, {q_after.abs().max():.2f}]")
-    print(f"{tag}.after_rotary  k  [{k_after.abs().min():.2f}, {k_after.abs().max():.2f}]")
+# def rot_hook(tag, module, args, output):
+#     # output is (q_after, k_after)
+#     q_after, k_after = output
+#     print(f"{tag}.after_rotary  q  [{q_after.abs().min():.2f}, {q_after.abs().max():.2f}]")
+#     print(f"{tag}.after_rotary  k  [{k_after.abs().min():.2f}, {k_after.abs().max():.2f}]")
 
-try:
-    l18_attn = model.backbone_layers[18].self_attn
-    # Gemma’s attention module exposes .rotary
-    l18_attn.rotary.register_forward_hook(partial(rot_hook, "L18"), with_kwargs=False)
-    print("🔍 Installed rotary spy for layer‑18")
-except (AttributeError, IndexError):
-    print("⚠️  Could not install rotary spy – layer 18 missing.")
+# try:
+#     l18_attn = model.backbone_layers[18].self_attn
+#     # Gemma’s attention module exposes .rotary
+#     l18_attn.rotary.register_forward_hook(partial(rot_hook, "L18"), with_kwargs=False)
+#     print("🔍 Installed rotary spy for layer‑18")
+# except (AttributeError, IndexError):
+#     print("⚠️  Could not install rotary spy – layer 18 missing.")
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
