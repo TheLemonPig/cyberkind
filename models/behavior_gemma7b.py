@@ -314,9 +314,7 @@ class GemmaModular(nn.Module):
         # First ModuleBlock now starts at the model hidden size (4096)
         hidden_dim = behave.config.hidden_size   # Gemma‑7B = 4096
         prev_hidden = hidden_dim
-        for bl in behave.layers[:self.split]:
-            del bl  # remove all unused layers
-        for bl in behave.layers[self.split:]:
+        for bl in behave.model.layers[self.split:]:
             device = next(bl.parameters()).device
             hidden_curr = bl.self_attn.q_proj.out_features
             mod_block = ModuleBlock(bl, in_dim=prev_hidden)  # map prev → current
