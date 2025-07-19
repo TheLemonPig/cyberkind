@@ -234,8 +234,8 @@ class GemmaModular(nn.Module):
         
         #self.predict.embed_positions.requires_grad_(False)
         # ✱A — one shared RoPE helper (lives on the same GPU as the first layer)
-        self.rotary_emb = GemmaRotaryEmbedding(self.config).to(
-            next(self.backbone_layers.parameters()).device
+        self.rotary_emb = GemmaRotaryEmbedding(self.predict.config).to(
+            next(self.predict.layers.parameters()).device
         )
         #self.embed = self.predict.model.embed_tokens; self.embed.requires_grad_(False)
         # -------------------------------------------------------------------
