@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.gemma.modeling_gemma import apply_rotary_pos_emb
 from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
@@ -345,10 +346,10 @@ class GemmaModular(nn.Module):
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
             )
-            return {"loss": loss, "logits": logits}
+            return CausalLMOutputWithPast(loss=loss, logits=logits)
 
         # inference / generate mode
-        return {"logits": logits}
+        return CausalLMOutputWithPast(logits=logits)
 
 # ---------------------------------------------------------------------------
 def build_modular_model():
