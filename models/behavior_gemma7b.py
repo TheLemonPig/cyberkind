@@ -129,7 +129,7 @@ class GatedHighway(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.to(self.w.weight.dtype) # ensure x is in the same dtype as weights
         out = torch.sigmoid(self.g(x)) * self.w(x)
-        print(f"[DBG GatedHighway] x {x.shape} {x.dtype}; w.weight {self.w.weight.shape}")
+        # print(f"[DBG GatedHighway] x {x.shape} {x.dtype}; w.weight {self.w.weight.shape}")
         return out
 
 # ---------------------------------------------------------------------------
@@ -214,15 +214,15 @@ class ModuleBlock(nn.Module):
 
 # ---------------------------------------------------------------------------
 
-def log_max(name):
-    def _hook(_, __, output):
-        # Gemma layers return either a tuple or BaseModelOutputWithPast; grab the tensor
-        if isinstance(output, (tuple, list)):
-            hidden = output[0]
-        else:  # huggingface BaseModelOutput-like
-            hidden = output.hidden_states if hasattr(output, "hidden_states") else output.last_hidden_state
-        print(f"[{name}] max|x| = {hidden.abs().max().item():.2f}")
-    return _hook
+# def log_max(name):
+#     def _hook(_, __, output):
+#         # Gemma layers return either a tuple or BaseModelOutputWithPast; grab the tensor
+#         if isinstance(output, (tuple, list)):
+#             hidden = output[0]
+#         else:  # huggingface BaseModelOutput-like
+#             hidden = output.hidden_states if hasattr(output, "hidden_states") else output.last_hidden_state
+#         print(f"[{name}] max|x| = {hidden.abs().max().item():.2f}")
+#     return _hook
 
 class GemmaModular(nn.Module):
     def __init__(self, predict: AutoModelForCausalLM, behave: AutoModelForCausalLM, layers: int = 8):
@@ -298,7 +298,7 @@ class GemmaModular(nn.Module):
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
         for idx, layer in enumerate(self.predict.layers[:self.split]):
             cos, sin = self.rotary_emb(h_back, position_ids)
-            layer.register_forward_hook(log_max(f"bb{idx}"))
+            # layer.register_forward_hook(log_max(f"bb{idx}"))
             assert not torch.isinf(h_back).any(), "Infinity already in h_back {idx} layers in"
             assert not torch.isnan(h_back).any(), f"NaN already in h_back {idx} layers in"
             h_back = layer(
