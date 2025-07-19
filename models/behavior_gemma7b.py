@@ -92,7 +92,7 @@ class HybridAttention(nn.Module):
         def _attn(qh, kh, vh):
             w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1)) * self.scale
             if mask is not None:
-                w = w + mask
+                w = w + mask.to(torch.float32)
             w = torch.softmax(w, dim=-1).to(torch.bfloat16)
             w = self.dropout(w)
             return (w @ vh.to(torch.bfloat16)).to(torch.bfloat16)
@@ -277,9 +277,7 @@ class GemmaModular(nn.Module):
         h_back = self.predict.embed_tokens(input_ids)
         # 1️⃣ give the backbone what it expects: an *additive* float mask
         if attention_mask is not None:
-            # convert 1 → 0   and   0 → -65 000 (≈ -inf in fp16/bf16)
             attn_mask = (1.0 - attention_mask.to(h_back.dtype)) * torch.finfo(h_back.dtype).min
-            attn_mask = attn_mask.to(torch.float32) 
         else:
             attn_mask = None
 
@@ -301,8 +299,14 @@ class GemmaModular(nn.Module):
                 position_embeddings=(cos, sin),                    # keep dtype consistent
                 attention_mask=attn_mask,
                 output_attentions=False,
-            )[0]                                                   # layer already returns BF16
-            
+            )[0]                                                 # layer already returns BF16
+
+        if attention_mask is not None:
+            attn_mask = (1.0 - attention_mask.to(h_back.dtype)) * torch.finfo(h_back.dtype).min
+            attn_mask = attn_mask.to(torch.float32) 
+        else:
+            attn_mask = None
+
         assert not torch.isinf(h_back).any(), "Infinity already in h_back  layers in"
         # module initial state
         h_mod = h_back.clone()
