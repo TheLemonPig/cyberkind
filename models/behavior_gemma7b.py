@@ -279,6 +279,7 @@ class GemmaModular(nn.Module):
         if attention_mask is not None:
             # convert 1 → 0   and   0 → -65 000 (≈ -inf in fp16/bf16)
             attn_mask = (1.0 - attention_mask.to(h_back.dtype)) * torch.finfo(h_back.dtype).min
+            attn_mask = attn_mask.to(torch.float32) 
         else:
             attn_mask = None
 
