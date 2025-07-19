@@ -199,8 +199,9 @@ class ModuleBlock(nn.Module):
 
         # Residual combine
         x_comb = x_mod + attn_out + drv
-
+        
         # Feedback (scalar‑gated)
+        x_comb = x_comb.to(self.w_fb.weight.dtype) # ensure x_comb is in the same dtype as weights
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
 
         # Feed‑forward & norm inside the cloned backbone block
