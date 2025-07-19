@@ -301,12 +301,6 @@ class GemmaModular(nn.Module):
                 output_attentions=False,
             )[0]                                                 # layer already returns BF16
 
-        if attention_mask is not None:
-            attn_mask = (1.0 - attention_mask.to(h_back.dtype)) * torch.finfo(h_back.dtype).min
-            attn_mask = attn_mask.to(torch.float32) 
-        else:
-            attn_mask = None
-
         assert not torch.isinf(h_back).any(), "Infinity already in h_back  layers in"
         # module initial state
         h_mod = h_back.clone()
@@ -317,6 +311,7 @@ class GemmaModular(nn.Module):
         ):
             print("‖before prediction‖", h_back.abs().max())
             cos, sin = self.rotary_emb(h_back, position_ids)
+
             h_back = predict_layer(
                 h_back + feedback,
                 position_embeddings=(cos, sin),             # ← NEW
