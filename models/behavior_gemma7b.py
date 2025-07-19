@@ -325,7 +325,7 @@ class GemmaModular(nn.Module):
             h_mod, feedback = behave_layer(h_mod, h_back, attn_mask)
             # add tanh-gated delta embedding
             print(h_mod, self.behave_embed_delta(input_ids), self.delta_gate)
-            h_mod = h_mod + torch.tanh(self.delta_gate) * self.embed_delta(input_ids)
+            h_mod = h_mod + torch.tanh(self.delta_gate) * self.behave_embed_delta(input_ids)
         logits = self.lm_head(self.norm(h_mod))
 
         # When SFTTrainer passes labels, compute causal‑LM loss
