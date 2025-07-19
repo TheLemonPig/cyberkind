@@ -92,7 +92,11 @@ class HybridAttention(nn.Module):
         def _attn(qh, kh, vh):
             w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1)) * self.scale
             if mask is not None:
-                w = w + mask.to(torch.float32)
+                if mask.dtype == torch.bool:
+                    # bool → additive −∞ in the same dtype as `scores` (float32)
+                    scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
+                else:                   # already additive
+                    scores = scores + mask.to(scores.dtype)
             w = torch.softmax(w, dim=-1).to(torch.bfloat16)
             w = self.dropout(w)
             return (w @ vh.to(torch.bfloat16)).to(torch.bfloat16)
@@ -276,10 +280,12 @@ class GemmaModular(nn.Module):
         B, T = input_ids.shape
         h_back = self.predict.embed_tokens(input_ids)
         # 1️⃣ give the backbone what it expects: an *additive* float mask
-        if attention_mask is not None:
-            attn_mask = (1.0 - attention_mask.to(h_back.dtype)) * torch.finfo(h_back.dtype).min
-        else:
-            attn_mask = None
+        if attention_mask is None:                      # no mask supplied → treat every token as real
+            attention_mask = torch.ones(B, T, device=input_ids.device, dtype=torch.bool)
+
+        # attention_mask: 1 = real, 0 = pad
+        attn_mask = ~attention_mask.to(torch.bool)      # True = “hide this position”
+        attn_mask = attn_mask[:, None, None, :]         # shape (B,1,1,T) so it broadcasts
 
         # if self.predict.position_embeddings is not None:
         #     h_back = h_back + self.predict.position_embeddings(torch.arange(T, device=h_back.device))[None, :]
