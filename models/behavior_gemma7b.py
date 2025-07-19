@@ -115,14 +115,15 @@ class GatedHighway(nn.Module):
     """σ(W_g x) ⊙ (W_h x), zero‑initialized to produce 0 at start."""
     def __init__(self, dim: int):
         super().__init__()
-        self.w = nn.Linear(dim, dim, bias=False).to(torch.bfloat16)
-        self.g = nn.Linear(dim, dim, bias=True).to(torch.bfloat16)
+        self.w = nn.Linear(dim, dim, bias=False)
+        self.g = nn.Linear(dim, dim, bias=True)
         # zero init
         nn.init.zeros_(self.w.weight)
         nn.init.zeros_(self.g.weight)
         nn.init.zeros_(self.g.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.to(self.w.weight.dtype) # ensure x is in the same dtype as weights
         out = torch.sigmoid(self.g(x)) * self.w(x)
         print(f"[DBG GatedHighway] x {x.shape} {x.dtype}; w.weight {self.w.weight.shape}")
         return out
