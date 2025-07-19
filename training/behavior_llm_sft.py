@@ -67,7 +67,7 @@ EOS_TOKEN = tokenizer.eos_token
 if load_in_8bit:
     quant_config = BitsAndBytesConfig(
         load_in_8bit=True,
-        bnb_8bit_compute_dtype=torch.float32,   # safer accumulator
+        # bnb_8bit_compute_dtype=torch.float32,   # safer accumulator
         #bnb_8bit_compute_dtype=torch.float32,   # <- critical change
         llm_int8_threshold=6.0,            # optional tuning threshold
         # llm_int8_has_fp16_weight=False,    # optional
