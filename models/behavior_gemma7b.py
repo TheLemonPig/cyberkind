@@ -316,7 +316,7 @@ class GemmaModular(nn.Module):
         for idx, (predict_layer, behave_layer) in enumerate(
             zip(self.predict.layers[self.split:], self.behave)
         ):
-            print("‖before prediction‖", h_back.abs().max())
+            # print("‖before prediction‖", h_back.abs().max())
             cos, sin = self.rotary_emb(h_back, position_ids)
 
             h_back = predict_layer(
@@ -325,13 +325,13 @@ class GemmaModular(nn.Module):
                 attention_mask=attn_mask,
                 output_attentions=False
             )[0]
-            print("‖after prediction‖", h_back.abs().max())
+            # print("‖after prediction‖", h_back.abs().max())
             # give the tuple to this block’s HybridAttention
             behave_layer.hybrid_attn.rotary = lambda x, pos=None, _cs=(cos, sin): _cs  # cos/sin already BF16
             assert not torch.isinf(h_back).any(), "Infinity already in h_back"
             h_mod, feedback = behave_layer(h_mod, h_back, attn_mask)
             # add tanh-gated delta embedding
-            print(h_mod, self.behave_embed_delta(input_ids), self.delta_gate)
+            # print(h_mod, self.behave_embed_delta(input_ids), self.delta_gate)
             h_mod = h_mod + torch.tanh(self.delta_gate) * self.behave_embed_delta(input_ids)
         logits = self.lm_head(self.norm(h_mod))
 
