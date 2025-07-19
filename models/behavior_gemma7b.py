@@ -199,7 +199,7 @@ class ModuleBlock(nn.Module):
 
         # Residual combine
         x_comb = x_mod + attn_out + drv
-        
+
         # Feedback (scalar‑gated)
         x_comb = x_comb.to(self.w_fb.weight.dtype) # ensure x_comb is in the same dtype as weights
         delta = torch.tanh(self.gate_fb) * self.w_fb(x_comb)
@@ -324,7 +324,7 @@ class GemmaModular(nn.Module):
             assert not torch.isinf(h_back).any(), "Infinity already in h_back"
             h_mod, feedback = behave_layer(h_mod, h_back, attn_mask)
             # add tanh-gated delta embedding
-            print(h_mod, self.embed_delta(input_ids), self.delta_gate)
+            print(h_mod, self.behave_embed_delta(input_ids), self.delta_gate)
             h_mod = h_mod + torch.tanh(self.delta_gate) * self.embed_delta(input_ids)
         logits = self.lm_head(self.norm(h_mod))
 
