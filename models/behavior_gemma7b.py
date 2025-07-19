@@ -93,10 +93,10 @@ class HybridAttention(nn.Module):
             w = (qh.to(torch.float32) @ kh.to(torch.float32).transpose(-2, -1)) * self.scale
             if mask is not None:
                 if mask.dtype == torch.bool:
-                    # bool → additive −∞ in the same dtype as `scores` (float32)
-                    scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
+                    # bool → additive −∞ in the same dtype as `w` (float32)
+                    w = w.masked_fill(mask, torch.finfo(w.dtype).min)
                 else:                   # already additive
-                    scores = scores + mask.to(scores.dtype)
+                    w = w + mask.to(w.dtype)
             w = torch.softmax(w, dim=-1).to(torch.bfloat16)
             w = self.dropout(w)
             return (w @ vh.to(torch.bfloat16)).to(torch.bfloat16)
