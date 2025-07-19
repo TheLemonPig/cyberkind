@@ -278,8 +278,8 @@ class GemmaModular(nn.Module):
         else:
             attn_mask = None
 
-        if self.predict.position_embeddings is not None:
-            h_back = h_back + self.predict.position_embeddings(torch.arange(T, device=h_back.device))[None, :]
+        # if self.predict.position_embeddings is not None:
+        #     h_back = h_back + self.predict.position_embeddings(torch.arange(T, device=h_back.device))[None, :]
         assert not torch.isnan(h_back).any(), "NaN already in h_back from very beginning"
         assert not torch.isinf(h_back).any(), "Infinity already in h_back from very beginning"
         # frozen until split
