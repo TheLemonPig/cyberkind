@@ -267,8 +267,8 @@ class GemmaModular(nn.Module):
         self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
         nn.init.zeros_(self.behave_embed_delta.weight)
         # -------------------------------------------------------------------
-        self.norm = behave.model.norm
-        self.lm_head = behave.lm_head
+        self.norm = behave.model.norm.to(dtype=torch.bfloat16)  # Gemma uses BF16 for LM norm
+        self.lm_head = behave.lm_head.to(dtype=torch.bfloat16)  # Gemma uses BF16 for LM head
 
     def forward(
         self,
