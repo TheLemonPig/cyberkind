@@ -305,7 +305,7 @@ class GemmaModular(nn.Module):
         feedback = torch.zeros_like(h_back)
         # paired layers
         for idx, (predict_layer, behave_layer) in enumerate(
-            zip(self.predict.layers[self.split:], self.behave.layers)
+            zip(self.predict.layers[self.split:], self.behave)
         ):
             print("‖before prediction‖", h_back.abs().max())
             cos, sin = self.rotary_emb(h_back, position_ids)
