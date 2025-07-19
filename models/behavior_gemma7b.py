@@ -257,7 +257,7 @@ class GemmaModular(nn.Module):
         num_tokens = behave.model.embed_tokens.num_embeddings
         self.behave_embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
         self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
-        nn.init.zeros_(self.embed_delta.weight)
+        nn.init.zeros_(self.behave_embed_delta.weight)
         # -------------------------------------------------------------------
         self.norm = behave.model.norm
         self.lm_head = behave.lm_head
