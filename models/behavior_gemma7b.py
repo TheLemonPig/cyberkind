@@ -255,7 +255,7 @@ class GemmaModular(nn.Module):
             prev_hidden = hidden_curr  # next block's "in_dim"
         # -------------------------------------------------------------------
         num_tokens = behave.model.embed_tokens.num_embeddings
-        self.embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
+        self.behave_embed_delta = nn.Embedding(num_tokens, hidden_dim, dtype=torch.bfloat16)
         self.delta_gate = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
         nn.init.zeros_(self.embed_delta.weight)
         # -------------------------------------------------------------------
@@ -270,7 +270,7 @@ class GemmaModular(nn.Module):
         **kwargs
     ):
         B, T = input_ids.shape
-        h_back = self.embed(input_ids)
+        h_back = self.prediction.embed_tokens(input_ids)
         # 1️⃣ give the backbone what it expects: an *additive* float mask
         if attention_mask is not None:
             # convert 1 → 0   and   0 → -65 000 (≈ -inf in fp16/bf16)
@@ -279,7 +279,7 @@ class GemmaModular(nn.Module):
             attn_mask = None
 
         if self.pos is not None:
-            h_back = h_back + self.pos(torch.arange(T, device=h_back.device))[None, :]
+            h_back = h_back + self.prediction.position_embeddings(torch.arange(T, device=h_back.device))[None, :]
         assert not torch.isnan(h_back).any(), "NaN already in h_back from very beginning"
         assert not torch.isinf(h_back).any(), "Infinity already in h_back from very beginning"
         # frozen until split
