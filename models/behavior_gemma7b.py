@@ -286,7 +286,7 @@ class GemmaModular(nn.Module):
         # build RoPE tuple for this sequence
         seq_len = h_back.size(1)
         position_ids = torch.arange(seq_len, device=h_back.device).unsqueeze(0).expand(B, -1)
-        for idx, layer in enumerate(self.backbone_layers[:self.split]):
+        for idx, layer in enumerate(self.predict.layers[:self.split]):
             cos, sin = self.rotary_emb(h_back, position_ids)
             layer.register_forward_hook(log_max(f"bb{idx}"))
             assert not torch.isinf(h_back).any(), "Infinity already in h_back {idx} layers in"
